@@ -4,6 +4,9 @@ import re
 import shutil
 from pathlib import Path
 
+from .cleaning import (clean_blocks, clean_extracted_text, is_standalone_footnote,
+                      new_cleaning_report, record_removed)
+
 
 def _copy_asset(src_name: str, assets_src: Path, work_dir: Path):
     """把 MinerU 解出的图片复制到论文 assets 目录，返回相对路径。"""
@@ -43,29 +46,52 @@ def _clean_text(t: str) -> str:
 
 
 def _is_footnote(text: str) -> bool:
-    """MinerU 把页底脚注当正文返回：以 <sup>数字</sup> 开头的块。"""
-    return bool(SUP_WRAPPED.match(text or ""))
+    """仅过滤带明确脚注标记的块；数字编号的普通正文仍然保留。"""
+    return bool(SUP_WRAPPED.match(text or "")) or is_standalone_footnote(text)
 
 
 # 页脚 running footer 文本模式（MinerU 无坐标信息，靠模式+重复度识别）
 PAGE_FOOTER = re.compile(r"^(\d+[:：]\d+|[A-Z]\.\s*[A-Z][a-z]+(?:\s+[A-Z]\.)?\s+et al\.?|\d{1,4})$")
 
 
-def _drop_running_footers(blocks: list) -> list:
+def _drop_running_footers(blocks: list, cleaning_report=None) -> list:
     """删页脚块：ACM 页码（263:3）、作者缩写（M. Zhang et al.）、纯数字页码；
     以及归一化后重复 ≥3 次的短块（各模板 running head/footer，含长页眉）。"""
     from collections import Counter
 
     def key(t):
-        return re.sub(r"\d+", "#", (t or "").strip())
+        return re.sub(r"\d+", "#", (t or "").strip().casefold())
 
-    cnt = Counter(key(b["en"]) for b in blocks
-                  if b["type"] == "text" and 0 < len((b["en"] or "").strip()) <= 90)
-    drop = {k for k, c in cnt.items() if c >= 3}
-    return [b for b in blocks
-            if not (b["type"] == "text" and (
-                PAGE_FOOTER.match((b["en"] or "").strip())
-                or key(b["en"]) in drop))]
+    # MinerU usually supplies page_idx but not bounding boxes. Use repeated text
+    # only when it is a short line on at least three different pages, never just
+    # because a common phrase occurs three times in the same page/document.
+    pages_by_key = {}
+    normalized_by_index = {}
+    for i, b in enumerate(blocks):
+        text = " ".join((b.get("en") or "").split())
+        page = (b.get("meta") or {}).get("page")
+        if b.get("type") != "text" or not text:
+            continue
+        if PAGE_FOOTER.match(text):
+            continue
+        if 15 <= len(text) <= 90 and page is not None:
+            k = key(text)
+            pages_by_key.setdefault(k, set()).add(str(page))
+            normalized_by_index[i] = (k, text, page)
+    repeated = {k for k, pages in pages_by_key.items() if len(pages) >= 3}
+    out = []
+    for i, b in enumerate(blocks):
+        text = " ".join((b.get("en") or "").split())
+        page = (b.get("meta") or {}).get("page")
+        if b.get("type") == "text" and PAGE_FOOTER.match(text):
+            record_removed(cleaning_report, "page_footer", text, page)
+            continue
+        item = normalized_by_index.get(i)
+        if item and item[0] in repeated:
+            record_removed(cleaning_report, "repeated_header_footer", item[1], page)
+            continue
+        out.append(b)
+    return out
 
 
 # 段内内联小节标题："1.1.1 Challenges. 首先……" / "1.1.3 Article Organization. 本文……"
@@ -133,7 +159,8 @@ def _merge_references(blocks: list) -> list:
     return blocks
 
 
-def from_content_list(data: list, assets_src: Path, work_dir: Path):
+def from_content_list(data: list, assets_src: Path, work_dir: Path, cleaning_report=None):
+    cleaning_report = cleaning_report if cleaning_report is not None else new_cleaning_report()
     blocks = []
     for it in data:
         t = it.get("type", "text")
@@ -155,8 +182,12 @@ def from_content_list(data: list, assets_src: Path, work_dir: Path):
         else:  # text
             raw = (it.get("text") or "").strip()
             if _is_footnote(raw):
-                continue  # 页底脚注混入正文 → 丢弃
-            text = _clean_text(raw)
+                record_removed(cleaning_report, "explicit_footnote", raw, page)
+                continue
+            text, removed_lines = clean_extracted_text(raw, page=page)
+            for rule, sample in removed_lines:
+                record_removed(cleaning_report, rule, sample, page)
+            text = _clean_text(text)
             if not text:
                 continue
             m = {"page": page}
@@ -164,10 +195,12 @@ def from_content_list(data: list, assets_src: Path, work_dir: Path):
                 blocks.append({"type": "heading", "en": text, "meta": {**m, "level": it["text_level"]}})
             else:
                 blocks.append({"type": "text", "en": text, "meta": m})
-    blocks = _drop_running_footers(blocks)
+    blocks = _drop_running_footers(blocks, cleaning_report)
     blocks = _split_inline_headings(blocks)
     blocks = _merge_list_items(blocks)
-    return _merge_references(blocks)
+    blocks = _merge_references(blocks)
+    blocks, _ = clean_blocks(blocks, cleaning_report)
+    return blocks
 
 
 MD_IMAGE = re.compile(r"!\[[^\]]*\]\(([^)]+)\)")
@@ -175,8 +208,9 @@ MD_HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
 MD_TABLE_ROW = re.compile(r"^\s*\|.*\|\s*$")
 
 
-def from_markdown(md: str, assets_src: Path, work_dir: Path):
+def from_markdown(md: str, assets_src: Path, work_dir: Path, cleaning_report=None):
     """无 content_list.json 时，从 markdown 解析出块（公式/图片信息可能缺失）。"""
+    cleaning_report = cleaning_report if cleaning_report is not None else new_cleaning_report()
     blocks = []
     lines = md.split("\n")
     i = 0
@@ -230,11 +264,13 @@ def from_markdown(md: str, assets_src: Path, work_dir: Path):
             para.append(lines[i])
             i += 1
         blocks.append({"type": "text", "en": " ".join(p.strip() for p in para), "meta": {}})
+    blocks, _ = clean_blocks(blocks, cleaning_report)
     return blocks
 
 
 def from_mineru_dir(extract_dir: Path, work_dir: Path):
     """在 MinerU 输出目录中找 content_list.json / markdown / images，转为统一块。"""
+    cleaning_report = new_cleaning_report()
     assets_src = None
     for p in extract_dir.rglob("*"):
         if p.is_dir() and p.name in ("images", "imgs", "images_origin"):
@@ -244,18 +280,18 @@ def from_mineru_dir(extract_dir: Path, work_dir: Path):
     if cl:
         try:
             data = json.loads(cl[0].read_text(encoding="utf-8"))
-            blocks = from_content_list(data, assets_src, work_dir)
+            blocks = from_content_list(data, assets_src, work_dir, cleaning_report)
             if blocks:
                 for idx, b in enumerate(blocks):
                     b["order_idx"] = idx
-                return {"blocks": blocks, "meta": {}}
+                return {"blocks": blocks, "meta": {"cleaning_report": cleaning_report}}
         except Exception:
             pass
     mds = [p for p in extract_dir.rglob("*.md") if p.name != "index.md"]
     if not mds:
         raise RuntimeError("MinerU 输出中未找到 markdown 或 content_list.json")
     md = mds[0].read_text(encoding="utf-8")
-    blocks = from_markdown(md, assets_src, work_dir)
+    blocks = from_markdown(md, assets_src, work_dir, cleaning_report)
     for idx, b in enumerate(blocks):
         b["order_idx"] = idx
-    return {"blocks": blocks, "meta": {}}
+    return {"blocks": blocks, "meta": {"cleaning_report": cleaning_report}}
