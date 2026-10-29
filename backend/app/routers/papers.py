@@ -188,6 +188,8 @@ def patch_paper(pid: str, body: dict = Body(...)):
 
 @router.delete("/{pid}")
 def delete_paper(pid: str):
+    if not row("SELECT id FROM papers WHERE id=?", (pid,)):
+        raise HTTPException(404, "论文不存在")
     with db() as c:
         for t in ("blocks", "annotations", "questions", "research_log", "sections"):
             c.execute(f"DELETE FROM {t} WHERE paper_id=?", (pid,))
@@ -207,7 +209,7 @@ async def reparse(pid: str, background: BackgroundTasks, body: dict = Body(defau
               if b["en"]}
     # 保留旧块直到新解析成功；process_paper 会在事务中一次性替换，失败时旧内容仍可读。
     ex("UPDATE papers SET status='pending_parse', translate_done=0, translate_total=0, "
-       "title_zh='', updated_at=? WHERE id=?", (now(), pid))
+       "updated_at=? WHERE id=?", (now(), pid))
     background.add_task(process_paper, pid, engine, old_zh)
     return {"ok": True}
 
