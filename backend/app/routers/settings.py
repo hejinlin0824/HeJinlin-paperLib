@@ -64,15 +64,8 @@ def put_settings(body: dict = Body(...)):
 
 @router.post("/settings/test-translate")
 async def test_translate(body: dict = Body(default={})):
-    s = get_settings()
     if body:
-        merged = {**{k: s[k] for k in ALLOWED_KEYS if k in s}, **{k: str(v) for k, v in body.items()}}
-        from ..db import db as _db
-        with _db() as c:
-            for k in ALLOWED_KEYS:
-                c.execute("INSERT INTO settings(key,value) VALUES(?,?) "
-                          "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                          (k, merged.get(k, "")))
+        _save_settings(body)
     info = engine_info()
     ok, err = engine_ready(info)
     if not ok:
