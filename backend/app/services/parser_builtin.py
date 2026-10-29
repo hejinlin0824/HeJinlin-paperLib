@@ -11,13 +11,15 @@ from statistics import median
 
 import fitz
 
+from .cleaning import clean_extracted_text, new_cleaning_report, record_removed
+
 REF_START = re.compile(r"^(references?|bibliography|参考文献)\s*[:.]?\s*$", re.I)
 REF_START_INLINE = re.compile(r"^(references?|bibliography)\s*[\n:]", re.I)
 CAPTION_RE = re.compile(r"^(figure|fig\.?|图|table|表)\s*\d*", re.I)
 NUM_HEADING = re.compile(r"^(\d+(?:\.\d+)*)\s+\S")
 SENT_END = tuple(".?!:。？！：")
 # 脚注开头：上标数字紧跟大写字母（如 "9Aider"）或星号/剑号标记（如 "*Corresponding"）
-FOOTNOTE_START = re.compile(r"^(\d{1,2}[A-Z(]|[∗*†‡§]\s?[A-Za-z(])")
+FOOTNOTE_START = re.compile(r"^\s*(?:\[\d{1,2}\]|\d{1,2}[A-Z(]|[∗*†‡§]\s?[A-Za-z(])")
 # 数学字体（TeX 计算机现代字体族等）：公式段的识别特征
 MATH_FONT = re.compile(r"(cmmi|cmsy|cmex|cmr|msam|msbm|eufm|mathematica|mathitalic|"
                        r"mathnormal|mathsymbol|latinmodern.*math|lmmath)", re.I)
@@ -123,6 +125,7 @@ def _overlap_ratio(a, b) -> float:
 def _page_items(doc):
     """按阅读顺序返回全部条目（文本/图片/表格），处理双栏与页眉页脚。"""
     items = []
+    cleaning_report = new_cleaning_report()
     seen_xrefs = set()
     img_count = 0
     page1_text = ""
@@ -142,11 +145,18 @@ def _page_items(doc):
             text = _block_text(b)
             if not text:
                 continue
-            # 丢弃纯页码
+            y0, y1 = b["bbox"][1], b["bbox"][3]
+            # Strip explicit watermarks line by line before paragraphs are assembled.
+            # If watermark and abstract share a PDF text block, the legitimate lines survive.
+            margin = y0 < H * 0.12 or y1 > H * 0.88
+            text, removed_lines = clean_extracted_text(text, margin=margin, page=pno)
+            for rule, sample in removed_lines:
+                record_removed(cleaning_report, rule, sample, pno)
+            if not text:
+                continue
             if re.fullmatch(r"\d{1,4}", text):
                 continue
-            # 丢弃页眉页脚（页面顶/底 6% 区域内的短文本）
-            y0, y1 = b["bbox"][1], b["bbox"][3]
+            # Top/bottom margin fragments are often publisher furniture, not body text.
             if (y0 < H * 0.055 or y1 > H * 0.955) and len(text) < 90:
                 continue
             spans = [s for ln in b.get("lines", []) for s in ln.get("spans", [])]
@@ -202,13 +212,19 @@ def _page_items(doc):
         else:
             ordered = sorted(text_items, key=lambda t: t["bbox"][1])
         items.extend(ordered)
-    return items, page1_text, page_h
+    return items, page1_text, page_h, cleaning_report
 
 
-def _drop_noise(items):
-    """剔除模板噪声块：版权/基金/CCS/DOI/期刊页眉等。"""
-    return [it for it in items
-            if it.get("kind") != "text" or not NOISE_BLOCK.match(" ".join(it["text"].split()))]
+def _drop_noise(items, report=None):
+    """剔除明确的模板噪声块，并记入清理报告。"""
+    kept = []
+    for it in items:
+        text = " ".join((it.get("text") or "").split())
+        if it.get("kind") == "text" and NOISE_BLOCK.match(text):
+            record_removed(report, "publisher_metadata", text, it.get("page"))
+            continue
+        kept.append(it)
+    return kept
 
 
 def _split_headings(items):
@@ -327,7 +343,7 @@ def extract_front_matter(blocks: list) -> tuple:
     return out, ("\n".join(authors) if authors else "")
 
 
-def _filter_footnotes(items, body_size, page_h):
+def _filter_footnotes(items, body_size, page_h, report=None):
     """剔除页脚脚注（小字号、页面底部、以脚注标记开头的文本块）。
 
     arXiv/ACM 等模板的脚注是页面底部的小字，以上标数字+大写字母（"9Aider
@@ -356,6 +372,9 @@ def _filter_footnotes(items, body_size, page_h):
         for it in small_bottom:
             if it["bbox"][1] >= zone_y - 2:
                 drop.add(id(it))
+    for it in items:
+        if id(it) in drop:
+            record_removed(report, "footnote_margin", it.get("text"), it.get("page"))
     return [it for it in items if id(it) not in drop]
 
 
@@ -382,7 +401,7 @@ def _merge_paragraphs(items):
     return merged
 
 
-def _drop_running_heads(items):
+def _drop_running_heads(items, report=None):
     """去掉跨页重复出现的页眉（页码归一化后比对）与孤立编号/页码块。"""
     from collections import Counter
 
@@ -390,14 +409,24 @@ def _drop_running_heads(items):
         # 页码/卷期号归一化为 #，使仅页码不同的页眉块可聚合计数
         return re.sub(r"\d+[:：]\s*\d+|\b\d{1,4}\b", "#", t)[:60]
 
-    cnt = Counter(key(it["text"]) for it in items
-                  if it["kind"] == "text" and len(it["text"]) < 90)
-    drop = {k for k, c in cnt.items() if c >= 3}
-    return [it for it in items
-            if not (it["kind"] == "text" and (
-                key(it["text"]) in drop
-                # 孤立编号/页码块（"1"、"2"、公式编号残留）
-                or re.fullmatch(r"[\d\s:：;,.]+", it["text"].strip())))]
+    page_sets = {}
+    for it in items:
+        text = it.get("text") or ""
+        if it.get("kind") == "text" and 15 <= len(text.strip()) < 90:
+            page_sets.setdefault(key(text), set()).add(it.get("page"))
+    drop = {k for k, pages in page_sets.items()
+            if len([p for p in pages if p is not None]) >= 3}
+    kept = []
+    for it in items:
+        text = it.get("text") or ""
+        is_repeated = it.get("kind") == "text" and key(text) in drop
+        is_orphan = it.get("kind") == "text" and bool(re.fullmatch(r"[\d\s:：;,.]+", text.strip()))
+        if is_repeated or is_orphan:
+            record_removed(report, "repeated_header_footer" if is_repeated else "orphan_page_number",
+                           text, it.get("page"))
+            continue
+        kept.append(it)
+    return kept
 
 
 def _classify_and_build(items, body_size):
@@ -529,11 +558,11 @@ def _attach_images(blocks, doc, work_dir: Path, items):
 
 def parse(pdf_path: str, work_dir: Path) -> dict:
     doc = fitz.open(pdf_path)
-    items, page1_text, page_h = _page_items(doc)
+    items, page1_text, page_h, cleaning_report = _page_items(doc)
     sizes = [it["size"] for it in items if it["kind"] == "text" and len(it["text"]) > 50]
     body_size = median(sizes) if sizes else 10.0
-    items = _drop_noise(items)
-    items = _filter_footnotes(_drop_running_heads(items), body_size, page_h)
+    items = _drop_noise(items, cleaning_report)
+    items = _filter_footnotes(_drop_running_heads(items, cleaning_report), body_size, page_h, cleaning_report)
     items = _split_headings(items)
     items = _merge_paragraphs(items)
     blocks = _classify_and_build(items, body_size)
@@ -557,4 +586,4 @@ def parse(pdf_path: str, work_dir: Path) -> dict:
         b["order_idx"] = idx
     return {"blocks": blocks,
             "meta": {"title": title, "year": year, "pages": doc.page_count,
-                     "first_page_text": page1_text}}
+                     "first_page_text": page1_text, "cleaning_report": cleaning_report}}
