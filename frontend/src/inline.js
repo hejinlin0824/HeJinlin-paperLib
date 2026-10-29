@@ -27,9 +27,9 @@ function escapeRe(s) {
 
 function safeHref(raw) {
   const value = String(raw ?? '').trim()
-  if (!value || /[\\u0000-\\u001f\\u007f]/.test(value)) return null
-  if (/^(https?:\\/\\/|mailto:)/i.test(value)) return value
-  if (/^(?:#|\\/(?!\\/)|\\.{1,2}\\/)/.test(value)) return value
+  if (!value || /[\u0000-\u001f\u007f]/.test(value)) return null
+  if (/^(https?:\/\/|mailto:)/i.test(value)) return value
+  if (/^(?:#|\/(?!\/)|\.{1,2}\/)/.test(value)) return value
   return null
 }
 
