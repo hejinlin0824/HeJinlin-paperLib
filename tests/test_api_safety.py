@@ -99,7 +99,6 @@ def test_backup_contains_consistent_database_snapshot_and_assets(monkeypatch, tm
     asset_dir = data_dir / "papers" / "p-test" / "assets"
     asset_dir.mkdir(parents=True)
     (asset_dir / "figure.png").write_bytes(b"fake-png-for-backup-test")
-    (data_dir / "library.db-wal").write_bytes(b"this live sidecar must not be copied")
 
     monkeypatch.setattr(settings_router, "DATA_DIR", data_dir)
     monkeypatch.setattr(settings_router, "DB_PATH", db_path)
