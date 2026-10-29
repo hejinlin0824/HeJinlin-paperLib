@@ -128,7 +128,7 @@ onMounted(load)
 <template>
   <div style="max-width:860px;">
     <h1 class="page-title">设置</h1>
-    <p class="page-sub">所有数据保存在本地，不上传任何服务器</p>
+    <p class="page-sub">论文与阅读记录默认保存在本机；使用云端解析或翻译时，相关 PDF / 文本会发送给对应服务。</p>
 
     <!-- 翻译引擎 -->
     <div class="card set-section">
