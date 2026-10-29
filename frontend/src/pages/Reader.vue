@@ -47,6 +47,26 @@ const explaining = computed(() => paper.value
 const explainPct = computed(() => paper.value?.explain_total
   ? Math.round((paper.value.explain_done / paper.value.explain_total) * 100) : 0)
 
+const cleaningReport = computed(() => {
+  const raw = paper.value?.cleaning_report
+  if (!raw) return { removed_count: 0, by_rule: {}, samples: [] }
+  if (typeof raw === 'object') return raw
+  try { return JSON.parse(raw) } catch { return { removed_count: 0, by_rule: {}, samples: [] } }
+})
+const cleaningSamples = computed(() => Array.isArray(cleaningReport.value.samples)
+  ? cleaningReport.value.samples : [])
+const CLEANING_LABELS = {
+  arxiv_watermark: 'arXiv 水印',
+  publication_watermark: '期刊/会议状态水印',
+  publisher_margin_metadata: '页边出版信息',
+  publisher_metadata: '出版模板信息',
+  explicit_footnote: '明确标记的脚注',
+  footnote_margin: '页底脚注区域',
+  repeated_header_footer: '跨页重复页眉/页脚',
+  page_footer: '页码/作者页脚',
+  orphan_page_number: '孤立页码',
+}
+
 // 正文渲染序列：块 + 章节解读卡（插在本章最后一个块之后，读完再看解读）
 const sectionByStart = computed(() => {
   const m = {}
@@ -481,6 +501,22 @@ onBeforeUnmount(() => {
 
     <div v-if="paper.error" style="padding:8px 18px; background:#f9e9e7; color:var(--danger); font-size:13px;">
       {{ paper.error }}
+    </div>
+
+    <div v-if="cleaningReport.removed_count > 0" style="padding:8px 18px; background:var(--panel); border-bottom:1px solid var(--line); font-size:12px;">
+      <details>
+        <summary style="cursor:pointer; color:var(--ink-2)">
+          🧹 已自动清理 {{ cleaningReport.removed_count }} 项非正文内容（页眉、arXiv 水印、页脚或脚注）· 查看清理记录
+        </summary>
+        <p style="margin:8px 0 4px; color:var(--ink-2)">
+          只自动移除高置信的独立水印/元数据；跨页重复项需在至少 3 个不同页面重复出现。正文里正常提及 arXiv 不会按关键词删除。
+        </p>
+        <ul style="margin:4px 0 4px 18px; padding:0; line-height:1.7">
+          <li v-for="(sample, idx) in cleaningSamples" :key="idx">
+            {{ sample.page ? '第 ' + sample.page + ' 页 · ' : '' }}{{ CLEANING_LABELS[sample.rule] || sample.rule }}：{{ sample.text }}
+          </li>
+        </ul>
+      </details>
     </div>
 
     <div class="reader-body">
