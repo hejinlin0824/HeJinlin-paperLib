@@ -6,7 +6,7 @@
 """
 import argparse
 import json
-import shutil
+import re
 import sqlite3
 import sys
 from datetime import datetime
@@ -19,8 +19,8 @@ from app.services.cleaning import (clean_blocks, new_cleaning_report, record_rem
 from app.services.sections import rebuild_sections
 
 DB = ROOT / "data" / "library.db"
-HTML_SUP_RE = __import__("re").compile(r"<sup>(.*?)</sup>", __import__("re").I | __import__("re").S)
-HTML_TAG_RE = __import__("re").compile(r"</?[a-zA-Z][^>]*>")
+HTML_SUP_RE = re.compile(r"<sup>(.*?)</sup>", re.I | re.S)
+HTML_TAG_RE = re.compile(r"</?[a-zA-Z][^>]*>")
 
 
 def _parse_meta(value):
@@ -146,17 +146,18 @@ def main():
     with sqlite3.connect(DB, timeout=20) as connection:
         connection.row_factory = sqlite3.Row
         cols = {r[1] for r in connection.execute("PRAGMA table_info(papers)")}
-        if "cleaning_report" not in cols:
-            if args.apply:
-                connection.execute("ALTER TABLE papers ADD COLUMN cleaning_report TEXT DEFAULT '{}'")
-                connection.commit()
-            else:
-                print("提示：数据库还没有 cleaning_report 列；请先启动新版 PaperLib 完成迁移。")
+        missing_report_column = "cleaning_report" not in cols
+        if missing_report_column and not args.apply:
+            raise SystemExit("数据库尚未迁移到新版本。请先启动新版 PaperLib，或在 --apply 模式下由脚本备份后迁移。")
         ids = _paper_ids(connection, args.paper_id)
 
     if args.apply:
         backup = _backup_database()
         print(f"备份已创建：{backup}")
+        if missing_report_column:
+            with sqlite3.connect(DB, timeout=20) as migration:
+                migration.execute("ALTER TABLE papers ADD COLUMN cleaning_report TEXT DEFAULT '{}'")
+                migration.commit()
         changed_ids = []
         with sqlite3.connect(DB, timeout=20) as connection:
             connection.row_factory = sqlite3.Row
