@@ -11,6 +11,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
 
+from app.services.cleaning import (  # noqa: E402  水印/脚注规则与清洗共用单一来源
+    ARXIV_STAMP,
+    PUBLICATION_STAMP,
+    is_standalone_footnote,
+)
+
 DB = Path(__file__).resolve().parent.parent / "data" / "library.db"
 
 NOISE = re.compile(
@@ -32,7 +38,9 @@ def check(pid):
     c.row_factory = sqlite3.Row
     p = c.execute("SELECT * FROM papers WHERE id=?", (pid,)).fetchone()
     if not p:
-        print(f"[{pid}] 不存在"); return
+        print(f"[{pid}] 不存在")
+        c.close()
+        return False
     bs = [dict(r) for r in c.execute(
         "SELECT * FROM blocks WHERE paper_id=? ORDER BY order_idx", (pid,))]
     secs = [dict(r) for r in c.execute(
@@ -117,6 +125,17 @@ def check(pid):
     empties = [b for b in bs if b["type"] in ("text", "heading") and not (b["en"] or "").strip()]
     item("无空块", len(empties) == 0, f"{len(empties)} 个")
 
+    # 新增回归：独立 arXiv / 期刊状态水印和明确脚注不能混进待翻译正文。
+    stamps = [b for b in bs if b["type"] in ("text", "heading", "list")
+              and any(ARXIV_STAMP.match(line.strip()) or PUBLICATION_STAMP.match(line.strip())
+                      for line in (b["en"] or "").splitlines() if line.strip())]
+    item("无 arXiv/出版状态水印", len(stamps) == 0,
+         "; ".join((b["en"] or "")[:60] for b in stamps[:2]))
+    footnote_blocks = [b for b in bs if b["type"] in ("text", "heading", "list")
+                       and is_standalone_footnote(b["en"] or "")]
+    item("无明确脚注块", len(footnote_blocks) == 0,
+         "; ".join((b["en"] or "")[:60] for b in footnote_blocks[:2]))
+
     fails = [r for r in results if not r[1]]
     status = "✅ 全部通过" if not fails else f"❌ {len(fails)} 项未过"
     print(f"\n===== [{pid}] {t[:40]} =====")
@@ -125,11 +144,15 @@ def check(pid):
         mark = "✅" if ok else "❌"
         line = f"  {mark} {name}" + (f"  ({detail})" if detail and not ok else "")
         print(line)
+    c.close()
+    return not fails
 
 
 if __name__ == "__main__":
     c = sqlite3.connect(DB)
     c.row_factory = sqlite3.Row
     ids = sys.argv[1:] or [r["id"] for r in c.execute("SELECT id FROM papers")]
+    ok = True
     for pid in ids:
-        check(pid)
+        ok = check(pid) and ok
+    sys.exit(0 if ok else 1)

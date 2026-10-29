@@ -1,7 +1,7 @@
 <script setup>
 // 单个内容块的渲染：三种模式（zh/en/bilingual）+ 批注标记 + 段落工具条
 import { computed, ref } from 'vue'
-import { renderInline, renderDisplayMath, mdTableToHtml, sanitizeHtml } from '../inline'
+import { escapeHtml, renderInline, renderDisplayMath, mdTableToHtml, sanitizeHtml } from '../inline'
 
 const props = defineProps({
   block: Object,
@@ -48,8 +48,9 @@ const marksFor = (surface) => props.annotations
   .map(a => ({
     anchor_text: a.anchor_text,
     cls: a.kind === 'bold' ? 'ub' : 'hl',
-    color: HL_COLORS[a.color] || a.color || 'var(--hl-yellow)',
-    id: a.id,
+    // Never interpolate an arbitrary stored string into an HTML style attribute.
+    color: HL_COLORS[a.color] || HL_COLORS.yellow,
+    id: Number.isSafeInteger(Number(a.id)) ? Number(a.id) : 0,
   }))
 
 const PIN_ICON = { note: '💬', summary: '📌', question: '❓' }
@@ -57,8 +58,9 @@ const pinsHtml = computed(() => props.annotations
   .filter(a => ['note', 'summary', 'question'].includes(a.kind))
   .map(a => {
     const label = { note: '批注', summary: '小结', question: '问题' }[a.kind]
-    const tip = (a.content || '').slice(0, 100).replace(/"/g, "'")
-    return `<span class="anno-pin anno-${a.kind}-pin" data-anno="${a.id}" title="${label}：${tip}">${PIN_ICON[a.kind]}</span>`
+    const tip = escapeHtml((a.content || '').slice(0, 100))
+    const id = Number.isSafeInteger(Number(a.id)) ? Number(a.id) : 0
+    return `<span class="anno-pin anno-${a.kind}-pin" data-anno="${id}" title="${escapeHtml(label)}：${tip}">${PIN_ICON[a.kind]}</span>`
   }).join(''))
 
 const htmlZh = computed(() => {

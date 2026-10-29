@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.responses import FileResponse
 
-from .config import DATA_DIR, FRONTEND_DIST
+from .config import FRONTEND_DIST, PAPERS_DIR
 from .db import init_db
 from .routers import annotations, dict, log, papers, questions, settings
 
@@ -28,8 +28,9 @@ app.include_router(log.router)
 app.include_router(settings.router)
 app.include_router(dict.router)
 
-# 论文静态资源（PDF / 图片）：/files/papers/{id}/...
-app.mount("/files", StaticFiles(directory=DATA_DIR), name="files")
+# 只公开论文 PDF / 图片目录；绝不能把整个 data/ 挂载出去（其中包含 library.db 和密钥）。
+# URL 继续保持 /files/papers/{paper_id}/...，与阅读器现有链接兼容。
+app.mount("/files/papers", StaticFiles(directory=PAPERS_DIR), name="paper-files")
 
 
 class SPAStatic(StaticFiles):

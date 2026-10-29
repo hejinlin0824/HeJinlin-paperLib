@@ -19,6 +19,11 @@ def list_annotations(pid: str):
 
 @router.post("")
 def create_annotation(pid: str, body: dict = Body(...)):
+    if not row("SELECT id FROM papers WHERE id=?", (pid,)):
+        raise HTTPException(404, "论文不存在")
+    block_id = body.get("block_id")
+    if block_id is not None and not row("SELECT id FROM blocks WHERE id=? AND paper_id=?", (block_id, pid)):
+        raise HTTPException(404, "论文段落不存在")
     kind = body.get("kind")
     if kind not in KINDS:
         raise HTTPException(400, f"kind 必须是 {KINDS}")
@@ -37,17 +42,21 @@ def create_annotation(pid: str, body: dict = Body(...)):
 
 @router.patch("/{aid}")
 def update_annotation(pid: str, aid: int, body: dict = Body(...)):
+    if not row("SELECT id FROM annotations WHERE id=? AND paper_id=?", (aid, pid)):
+        raise HTTPException(404, "批注不存在")
     fields = {k: body[k] for k in ("content", "color") if k in body}
     if not fields:
         raise HTTPException(400, "无可更新字段")
     sets = ", ".join(f"{k}=?" for k in fields)
     ex(f"UPDATE annotations SET {sets}, updated_at=? WHERE id=? AND paper_id=?",
        (*fields.values(), now(), aid, pid))
-    return row("SELECT * FROM annotations WHERE id=?", (aid,))
+    return row("SELECT * FROM annotations WHERE id=? AND paper_id=?", (aid, pid))
 
 
 @router.delete("/{aid}")
 def delete_annotation(pid: str, aid: int):
+    if not row("SELECT id FROM annotations WHERE id=? AND paper_id=?", (aid, pid)):
+        raise HTTPException(404, "批注不存在")
     ex("DELETE FROM annotations WHERE id=? AND paper_id=?", (aid, pid))
-    ex("DELETE FROM questions WHERE annotation_id=?", (aid,))
+    ex("DELETE FROM questions WHERE annotation_id=? AND paper_id=?", (aid, pid))
     return {"ok": True}

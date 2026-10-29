@@ -22,6 +22,14 @@ function escapeRe(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+function safeHref(raw) {
+  const value = String(raw ?? '').trim()
+  if (!value || /[\u0000-\u001f\u007f]/.test(value)) return null
+  if (/^(https?:\/\/|mailto:)/i.test(value)) return value
+  if (/^(?:#|\/(?!\/)|\.{1,2}\/)/.test(value)) return value
+  return null
+}
+
 // 在原文中定位锚文本：精确 → 忽略大小写 → 忽略空白差异
 export function findAnchor(raw, anchor) {
   if (!raw || !anchor) return -1
@@ -114,7 +122,10 @@ export function renderInline(text, marks = []) {
     } else if (tok.type === 'cite') {
       html += `<sup class="cite" data-cite="${tok.value}">[${tok.value}]</sup>`
     } else if (tok.type === 'link') {
-      html += `<a href="${escapeHtml(tok.value2)}" target="_blank" rel="noopener">${escapeHtml(tok.value)}</a>`
+      const href = safeHref(tok.value2)
+      html += href
+        ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(tok.value)}</a>`
+        : escapeHtml(tok.value)
     } else if (tok.type === 'strong') {
       html += `<strong>${escapeHtml(tok.value)}</strong>`
     } else if (tok.type === 'aihl') {
@@ -201,8 +212,69 @@ export function mdTableToHtml(md) {
   return html + '</tbody></table>'
 }
 
+const SAFE_HTML_TAGS = new Set([
+  'table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td', 'caption',
+  'div', 'p', 'br', 'span', 'em', 'strong', 'b', 'i', 'sub', 'sup',
+  'code', 'pre', 'ul', 'ol', 'li', 'a',
+])
+const DROP_HTML_CONTENT = new Set([
+  'script', 'style', 'iframe', 'object', 'embed', 'svg', 'math',
+  'form', 'input', 'button', 'textarea', 'select', 'option',
+  'meta', 'link', 'base', 'template', 'noscript',
+])
+
+function appendSafeNode(node, target, doc) {
+  if (node.nodeType === 3) {
+    target.appendChild(doc.createTextNode(node.nodeValue || ''))
+    return
+  }
+  if (node.nodeType !== 1) return
+  const tag = node.tagName.toLowerCase()
+  if (DROP_HTML_CONTENT.has(tag)) return
+  if (!SAFE_HTML_TAGS.has(tag)) {
+    for (const child of [...node.childNodes]) appendSafeNode(child, target, doc)
+    return
+  }
+
+  const clean = doc.createElement(tag)
+  if (tag === 'a') {
+    const href = safeHref(node.getAttribute('href'))
+    if (href) {
+      clean.setAttribute('href', href)
+      clean.setAttribute('target', '_blank')
+      clean.setAttribute('rel', 'noopener noreferrer')
+    }
+    const title = node.getAttribute('title')
+    if (title) clean.setAttribute('title', title.slice(0, 200))
+  }
+  if (tag === 'td' || tag === 'th') {
+    for (const attr of ['colspan', 'rowspan']) {
+      const value = node.getAttribute(attr)
+      if (value && /^\d{1,3}$/.test(value) && Number(value) >= 1 && Number(value) <= 100) {
+        clean.setAttribute(attr, value)
+      }
+    }
+    const scope = node.getAttribute('scope')
+    if (['row', 'col', 'rowgroup', 'colgroup'].includes(scope)) clean.setAttribute('scope', scope)
+    const align = node.getAttribute('align')
+    if (['left', 'center', 'right'].includes((align || '').toLowerCase())) {
+      clean.setAttribute('align', align.toLowerCase())
+    }
+  }
+  for (const child of [...node.childNodes]) appendSafeNode(child, clean, doc)
+  target.appendChild(clean)
+}
+
+/**
+ * MinerU may provide table HTML derived from document content. Parse it detached
+ * and rebuild from a strict allowlist; regex-only removal of <script> and on* is
+ * insufficient for malformed HTML, SVG, dangerous URLs and attribute injection.
+ */
 export function sanitizeHtml(h) {
-  return String(h ?? '')
-    .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+  const source = String(h ?? '')
+  if (typeof DOMParser === 'undefined') return escapeHtml(source)
+  const parsed = new DOMParser().parseFromString(source, 'text/html')
+  const out = parsed.createElement('div')
+  for (const child of [...parsed.body.childNodes]) appendSafeNode(child, out, parsed)
+  return out.innerHTML
 }

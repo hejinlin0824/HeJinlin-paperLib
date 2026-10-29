@@ -1,5 +1,7 @@
 """设置、术语表、引擎测试、数据备份。"""
 import io
+import sqlite3
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -7,7 +9,7 @@ import httpx
 from fastapi import APIRouter, Body, HTTPException
 from fastapi.responses import StreamingResponse
 
-from ..config import DATA_DIR
+from ..config import DATA_DIR, DB_PATH
 from ..db import ex, get_settings, row, rows, set_setting
 from ..services.translate import PROVIDER_PRESETS, chat, engine_info, engine_ready
 from ..util import now
@@ -19,30 +21,51 @@ ALLOWED_KEYS = {"translate_provider", "translate_base_url", "translate_api_key",
                 "parse_engine", "mineru_token", "auto_translate"}
 
 
+SECRET_KEYS = {"translate_api_key", "mineru_token"}
+CLEAR_SECRET_FLAGS = {
+    "clear_translate_api_key": "translate_api_key",
+    "clear_mineru_token": "mineru_token",
+}
+
+
+def _public_settings(settings=None):
+    """Never return configured secrets to the browser; only return presence flags."""
+    values = dict(settings if settings is not None else get_settings())
+    for key in SECRET_KEYS:
+        values[f"{key}_configured"] = bool(values.get(key))
+        values[key] = ""
+    return values
+
+
+def _save_settings(body):
+    """Empty secret fields mean 'keep existing'; clearing requires an explicit flag."""
+    for flag, key in CLEAR_SECRET_FLAGS.items():
+        if body.get(flag):
+            set_setting(key, "")
+    for key, value in body.items():
+        if key not in ALLOWED_KEYS:
+            continue
+        if key in SECRET_KEYS:
+            if body.get(f"clear_{key}") or not str(value or "").strip():
+                continue
+        set_setting(key, str(value))
+    return _public_settings()
+
+
 @router.get("/settings")
 def get_all():
-    return {"settings": get_settings(), "presets": PROVIDER_PRESETS}
+    return {"settings": _public_settings(), "presets": PROVIDER_PRESETS}
 
 
 @router.put("/settings")
 def put_settings(body: dict = Body(...)):
-    for k, v in body.items():
-        if k in ALLOWED_KEYS:
-            set_setting(k, str(v))
-    return get_settings()
+    return _save_settings(body)
 
 
 @router.post("/settings/test-translate")
 async def test_translate(body: dict = Body(default={})):
-    s = get_settings()
     if body:
-        merged = {**{k: s[k] for k in ALLOWED_KEYS if k in s}, **{k: str(v) for k, v in body.items()}}
-        from ..db import db as _db
-        with _db() as c:
-            for k in ALLOWED_KEYS:
-                c.execute("INSERT INTO settings(key,value) VALUES(?,?) "
-                          "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                          (k, merged.get(k, "")))
+        _save_settings(body)
     info = engine_info()
     ok, err = engine_ready(info)
     if not ok:
@@ -124,10 +147,31 @@ def glossary_delete(gid: int):
 
 @router.get("/backup.zip")
 def backup():
+    """Create a consistent SQLite snapshot, then package it with paper assets."""
     buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for p in sorted(DATA_DIR.rglob("*")):
-            if p.is_file() and p.suffix not in (".wal", ".shm") and "mineru_" not in p.name:
+    with tempfile.TemporaryDirectory(prefix="paperlib-backup-") as temp_dir:
+        snapshot = Path(temp_dir) / DB_PATH.name
+        # sqlite3.Connection.backup includes committed WAL changes in a consistent snapshot.
+        # NOTE: `with sqlite3.connect(...)` only ends the transaction, it does NOT close the
+        # connection — on Windows the snapshot file would stay locked and break cleanup.
+        source = sqlite3.connect(DB_PATH, timeout=20)
+        target = sqlite3.connect(snapshot)
+        try:
+            source.backup(target)
+            target.commit()
+        finally:
+            target.close()
+            source.close()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.write(snapshot, DB_PATH.name)
+            for p in sorted(DATA_DIR.rglob("*")):
+                if not p.is_file():
+                    continue
+                # The snapshot above is authoritative; do not mix live DB / WAL / SHM files.
+                if p.name in {DB_PATH.name, f"{DB_PATH.name}-wal", f"{DB_PATH.name}-shm"}:
+                    continue
+                if p.name.startswith(f"{DB_PATH.name}.preclean-") or "mineru_" in p.name:
+                    continue
                 zf.write(p, p.relative_to(DATA_DIR))
     buf.seek(0)
     return StreamingResponse(

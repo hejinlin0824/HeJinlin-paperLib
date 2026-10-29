@@ -1,119 +1,184 @@
 # -*- coding: utf-8 -*-
-"""论文数据清理脚本：对已入库的块做就地卫生清理（无需重新解析/翻译）。
+"""清理已经入库的论文噪声块。
 
-清理项（历次反馈固化）：
-1. 脚注块：以 <sup>数字</sup> 开头的块（MinerU 把页底脚注当正文返回）→ 删除
-2. HTML 标签残留：内联 <sup>n</sup> → [n]，其余标签剥壳保内容
-3. 模板噪声：版权/许可/DOI/CCS/引用格式块/基金句/作者联系方式 → 删除
-4. 孤立编号块："1"、"263:3" 等纯数字/标点块 → 删除
-5. 页脚重复块：数字归一化后重复 ≥3 次的短块 → 删除
-6. 乱码：U+FFFD 替换字符、软连字符 → 剥除
-
-用法：python tools/clean_paper.py [paper_id ...]   # 缺省清理全部论文
+默认只预览；只有明确传入 --apply 才会写数据库。应用前自动生成 SQLite 一致性备份。
+支持按 paper_id 处理单篇，也可以不传 ID 处理全部论文。
 """
+import argparse
 import json
 import re
 import sqlite3
 import sys
-from collections import Counter
+from datetime import datetime
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
-DB = Path(__file__).resolve().parent.parent / "data" / "library.db"
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "backend"))
 
-SUP_START = re.compile(r"^\s*<sup>\s*\d+\s*</sup>", re.I)
-HTML_SUP = re.compile(r"<sup>(.*?)</sup>", re.I | re.S)
-HTML_TAG = re.compile(r"</?[a-zA-Z][^>]*>")
-NOISE = re.compile(
-    r"^(CCS Concepts|ACM Reference Format|©|\(c\)\s*\d{4}|Copyright|This work is licensed|"
-    r"Creative Commons|CC[ -]BY|Attribution\s*(4\.0|NonCommercial|ShareAlike)|"
-    r"https?://(dx\.)?doi\.org|doi\.org/|ACM\s+\d{4}-\d{4}|ACM Comput\. Surv|ACM Trans\.|"
-    r"Proc\.\s*of|Proceedings of the|Vol(ume)?\.?\s*\d+|Article\s*(No\.?\s*)?\d{1,4}\.?\s*$|"
-    r"Publication date|出版日期|版权归|版权所有|Authors?['’]?\s*(Contact|address)|通讯作者|"
-    r"^[A-Z][a-z]+ \d{1,2}, \d{4}$|"
-    r".{0,160}(research|work|studies?) (is|are)? ?supported( in part| in whole| partly| partially)? by)",
-    re.I)
-CITATION_FMT = re.compile(
-    r".{0,250}(ACM (Comput\. Surv|Trans\.)\s*\d+,\s*\d+|"
-    r"Article\s*\d+\s*\(\w+\s+\d{4}\),\s*\d+\s*pages?)")
-ORPHAN_DIGIT = re.compile(r"[\d\s:：;,.]+")
+from app.services.cleaning import (clean_blocks, new_cleaning_report, record_removed)
+from app.services.sections import rebuild_sections
+
+DB = ROOT / "data" / "library.db"
+HTML_SUP_RE = re.compile(r"<sup>(.*?)</sup>", re.I | re.S)
+HTML_TAG_RE = re.compile(r"</?[a-zA-Z][^>]*>")
 
 
-def clean_blocks(blocks):
-    """返回 (保留块列表, 删除计数, 修改计数)。"""
-    drops = Counter()
-    modified = 0
-
-    def key(t):
-        return re.sub(r"\d+", "#", (t or "").strip())
-
-    # 页脚重复度统计
-    cnt = Counter(key(b["en"]) for b in blocks
-                  if b.get("type") == "text" and 0 < len((b["en"] or "").strip()) <= 90)
-    dup = {k for k, c in cnt.items() if c >= 3}
-
-    kept = []
-    for b in blocks:
-        if b.get("type") in ("text", "heading", "list"):
-            en = b.get("en") or ""
-            zh = b.get("zh") or ""
-            if SUP_START.match(en.strip()) or SUP_START.match(zh.strip()):
-                drops["脚注块"] += 1
-                continue
-            new_en = HTML_SUP.sub(r"[\1]", en)
-            new_en = HTML_TAG.sub("", new_en)
-            new_en = new_en.replace("\ufffd", "").replace("\xad", "")
-            new_zh = HTML_SUP.sub(r"[\1]", zh)
-            new_zh = HTML_TAG.sub("", new_zh)
-            new_zh = new_zh.replace("\ufffd", "").replace("\xad", "")
-            if new_en.strip() and (ORPHAN_DIGIT.fullmatch(new_en.strip())
-                                   or NOISE.match(" ".join(new_en.split()))
-                                   or CITATION_FMT.match(" ".join(new_en.strip()))):
-                drops["噪声块"] += 1
-                continue
-            if b.get("type") == "text" and new_en.strip() and (
-                    PAGE_FOOTER_LIKE(new_en) or (key(new_en) in dup and len(new_en.strip()) <= 90)):
-                drops["页脚块"] += 1
-                continue
-            if new_en != en or new_zh != zh:
-                modified += 1
-            b["en"], b["zh"] = new_en, new_zh
-        kept.append(b)
-    return kept, drops, modified
+def _parse_meta(value):
+    try:
+        parsed = json.loads(value or "{}")
+        return parsed if isinstance(parsed, dict) else {}
+    except (TypeError, ValueError):
+        return {}
 
 
-def PAGE_FOOTER_LIKE(t):
-    t = t.strip()
-    return bool(re.fullmatch(r"\d+[:：]\d+", t) or re.fullmatch(r"\d{1,4}", t)
-                or re.match(r"^[A-Z]\.\s*[A-Z][a-z]+.*et al\.?$", t))
+def _clean_markup(block):
+    """Clean presentation-only legacy HTML on text blocks, not table/formula payloads."""
+    if block.get("type") not in {"text", "heading", "list"}:
+        return block
+    # Inline superscripts are citations; standalone marked footnotes have already
+    # been detected by clean_blocks before tags are flattened.
+    for field in ("en", "zh"):
+        value = str(block.get(field) or "")
+        value = HTML_SUP_RE.sub(r"[\1]", value)
+        value = HTML_TAG_RE.sub("", value)
+        value = value.replace("\ufffd", "").replace("\xad", "")
+        block[field] = value
+    return block
 
 
-def clean_paper(pid):
-    c = sqlite3.connect(DB)
-    c.row_factory = sqlite3.Row
-    p = c.execute("SELECT title FROM papers WHERE id=?", (pid,)).fetchone()
-    if not p:
+def _backup_database():
+    if not DB.exists():
+        raise FileNotFoundError(f"数据库不存在：{DB}")
+    backup_dir = ROOT / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup_path = backup_dir / f"library.db.preclean-{stamp}"
+    with sqlite3.connect(DB, timeout=20) as source:
+        with sqlite3.connect(backup_path) as target:
+            source.backup(target)
+    return backup_path
+
+
+def _paper_ids(connection, requested):
+    if requested:
+        return requested
+    return [r[0] for r in connection.execute("SELECT id FROM papers ORDER BY created_at")]
+
+
+def clean_one(connection, pid, apply=False):
+    paper = connection.execute(
+        "SELECT title, cleaning_report FROM papers WHERE id=?", (pid,)
+    ).fetchone()
+    if not paper:
         print(f"[{pid}] 不存在")
-        return
-    blocks = [dict(r) for r in c.execute(
-        "SELECT * FROM blocks WHERE paper_id=? ORDER BY order_idx", (pid,))]
-    kept, drops, modified = clean_blocks(blocks)
-    # 重排 order_idx 并写回
-    c.execute("DELETE FROM blocks WHERE paper_id=?", (pid,))
-    for i, b in enumerate(kept):
-        c.execute(
+        return False
+
+    connection.row_factory = sqlite3.Row
+    original = [dict(r) for r in connection.execute(
+        "SELECT * FROM blocks WHERE paper_id=? ORDER BY order_idx", (pid,)
+    )]
+    for block in original:
+        block["meta"] = _parse_meta(block.get("meta"))
+    old_report = _parse_meta(paper["cleaning_report"])
+    report = old_report if isinstance(old_report.get("by_rule"), dict) else new_cleaning_report()
+
+    # First pass identifies explicitly marked footnotes before legacy HTML is flattened.
+    kept, report = clean_blocks(original, report)
+    kept = [_clean_markup(b) for b in kept]
+    kept, report = clean_blocks(kept, report)
+
+    kept_ids = {b["id"] for b in kept}
+    annotated_ids = {r[0] for r in connection.execute(
+        "SELECT block_id FROM annotations WHERE paper_id=? AND block_id IS NOT NULL", (pid,)
+    )}
+    # Keep an invisible tombstone when a removed block has annotations, so their block
+    # IDs remain stable and the notes do not become detached from the reading timeline.
+    kept_by_id = {b["id"]: b for b in kept}
+    for block in original:
+        if block["id"] in kept_ids or block["id"] not in annotated_ids:
+            continue
+        meta = dict(block.get("meta") or {})
+        meta["cleaned_placeholder"] = True
+        kept_by_id[block["id"]] = {
+            **block, "type": "cleaned", "en": "", "zh": "",
+            "meta": meta, "translate_status": "done",
+        }
+    final_blocks = sorted(kept_by_id.values(), key=lambda b: b.get("order_idx", 0))
+    removed = len(original) - len(final_blocks)
+    changed = any(
+        (o.get("en") != n.get("en") or o.get("zh") != n.get("zh")
+         or o.get("type") != n.get("type"))
+        for o in original for n in final_blocks if o["id"] == n["id"]
+    )
+
+    print(f"[{pid}] {(paper['title'] or '')[:48]} | 原块 {len(original)} -> {len(final_blocks)} | "
+          f"删除 {removed} 块 | 新报告 {report.get('by_rule', {})}")
+    if not apply:
+        return False
+    if not removed and not changed and report == old_report:
+        return False
+
+    connection.execute("DELETE FROM blocks WHERE paper_id=?", (pid,))
+    for index, block in enumerate(final_blocks):
+        connection.execute(
             "INSERT INTO blocks(id, paper_id, order_idx, type, en, zh, meta, translate_status, plain, ask) "
             "VALUES(?,?,?,?,?,?,?,?,?,?)",
-            (b["id"], pid, i, b["type"], b["en"], b["zh"], b["meta"],
-             b.get("translate_status", "done"), b.get("plain", ""), b.get("ask", "")))
-    c.commit()
-    drops_total = sum(drops.values())
-    print(f"[{pid}] {(p['title'] or '')[:36]} | 删除 {drops_total} 块 {dict(drops)} | 修正 {modified} 块 | 保留 {len(kept)}")
+            (block["id"], pid, index, block["type"], block.get("en", ""), block.get("zh", ""),
+             json.dumps(block.get("meta") or {}, ensure_ascii=False),
+             block.get("translate_status", "done"), block.get("plain", ""), block.get("ask", "")),
+        )
+    connection.execute(
+        "UPDATE papers SET cleaning_report=?, updated_at=datetime('now') WHERE id=?",
+        (json.dumps(report, ensure_ascii=False), pid),
+    )
+    return True
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("paper_id", nargs="*", help="可选：只清理指定论文 ID")
+    parser.add_argument("--apply", action="store_true", help="实际写入数据库；默认仅预览")
+    args = parser.parse_args()
+
+    if not DB.exists():
+        raise SystemExit(f"数据库不存在：{DB}；请先运行一次 PaperLib。")
+
+    with sqlite3.connect(DB, timeout=20) as connection:
+        connection.row_factory = sqlite3.Row
+        cols = {r[1] for r in connection.execute("PRAGMA table_info(papers)")}
+        missing_report_column = "cleaning_report" not in cols
+        if missing_report_column and not args.apply:
+            raise SystemExit("数据库尚未迁移到新版本。请先启动新版 PaperLib，或在 --apply 模式下由脚本备份后迁移。")
+        ids = _paper_ids(connection, args.paper_id)
+
+    if args.apply:
+        backup = _backup_database()
+        print(f"备份已创建：{backup}")
+        if missing_report_column:
+            with sqlite3.connect(DB, timeout=20) as migration:
+                migration.execute("ALTER TABLE papers ADD COLUMN cleaning_report TEXT DEFAULT '{}'")
+                migration.commit()
+        changed_ids = []
+        with sqlite3.connect(DB, timeout=20) as connection:
+            connection.row_factory = sqlite3.Row
+            connection.execute("BEGIN IMMEDIATE")
+            for pid in ids:
+                if clean_one(connection, pid, apply=True):
+                    changed_ids.append(pid)
+            connection.commit()
+        for pid in changed_ids:
+            try:
+                rebuild_sections(pid)
+            except Exception as exc:
+                print(f"[{pid}] 章节索引重建失败（正文清洗已提交，请检查日志）：{exc}")
+        print(f"完成：更新 {len(changed_ids)} 篇论文。")
+    else:
+        with sqlite3.connect(DB, timeout=20) as connection:
+            connection.row_factory = sqlite3.Row
+            for pid in ids:
+                clean_one(connection, pid, apply=False)
+        print("当前为预览模式，没有修改数据库。确认报告后运行：python tools/clean_paper.py --apply [paper_id ...]")
 
 
 if __name__ == "__main__":
-    c = sqlite3.connect(DB)
-    c.row_factory = sqlite3.Row
-    ids = sys.argv[1:] or [r["id"] for r in c.execute("SELECT id FROM papers")]
-    for pid in ids:
-        clean_paper(pid)
+    main()

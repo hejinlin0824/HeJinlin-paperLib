@@ -14,6 +14,7 @@ from ..services import parser_builtin, parser_mineru
 from ..services import explain as explain_svc
 from ..services import sections as sec_svc
 from ..services import translate as tsvc
+from ..services.cleaning import clean_blocks, new_cleaning_report, record_removed
 from ..util import dumps, loads, new_id, now
 
 router = APIRouter(prefix="/api/papers", tags=["papers"])
@@ -41,13 +42,25 @@ async def process_paper(pid: str, engine: str | None = None, old_zh: dict | None
         else:
             result = await asyncio.to_thread(parser_builtin.parse, str(pdf), pdir)
         blocks, meta = result.get("blocks", []), result.get("meta", {})
+        cleaning_report = meta.get("cleaning_report") if isinstance(meta, dict) else None
+        if not isinstance(cleaning_report, dict):
+            cleaning_report = new_cleaning_report()
+        blocks, cleaning_report = clean_blocks(blocks, cleaning_report)
         if not blocks:
-            raise RuntimeError("解析结果为空（可能是扫描版 PDF，请改用 MinerU 引擎并开启 OCR）")
-        # 头部结构化 + 噪声过滤（两引擎统一）：标题删除、作者/单位聚合为作者卡、
-        # 版权/DOI/卷期/CC 许可等模板噪声剔除（MinerU 路径此前没有这层过滤）
+            raise RuntimeError("解析结果为空（可能是扫描版 PDF；也可能只检测到水印/页脚等非正文内容）")
+        # 两种解析器共用同一轮高置信清洗；随后统一处理作者卡与模板噪声。
         blocks, authors_en = parser_builtin.extract_front_matter(blocks)
-        blocks = [b for b in blocks
-                  if b.get("type") != "text" or not parser_builtin._noiseish(b.get("en", ""))]
+        kept_blocks = []
+        for b in blocks:
+            text = b.get("en", "")
+            if b.get("type") == "text" and parser_builtin._noiseish(text):
+                record_removed(cleaning_report, "publisher_metadata", text,
+                               (b.get("meta") or {}).get("page"))
+                continue
+            kept_blocks.append(b)
+        blocks = kept_blocks
+        if not blocks:
+            raise RuntimeError("清洗后没有剩余正文，请检查 PDF 或选择其他解析引擎")
         for i, b in enumerate(blocks):
             b["order_idx"] = i
         # 去掉与论文标题重复的首个标题块（阅读器已单独渲染标题）
@@ -79,7 +92,7 @@ async def process_paper(pid: str, engine: str | None = None, old_zh: dict | None
             import traceback
             traceback.print_exc()
         p = row("SELECT title, year, title_locked, authors FROM papers WHERE id=?", (pid,))
-        upd, args = ["status='parsed'", "updated_at=?"], [now()]
+        upd, args = ["status='parsed'", "cleaning_report=?", "updated_at=?"], [dumps(cleaning_report), now()]
         if meta.get("title") and (not p or not p["title_locked"]):
             upd.append("title=?")
             args.append(meta["title"])
@@ -121,7 +134,7 @@ async def upload(background: BackgroundTasks, file: UploadFile = File(...)):
 LIST_SQL = """
 SELECT p.id, p.title, p.title_zh, p.authors, p.year, p.venue, p.tags, p.rating,
        p.status, p.parse_engine, p.translate_engine, p.translate_done, p.translate_total,
-       p.guide, p.explain_done, p.explain_total,
+       p.guide, p.explain_done, p.explain_total, p.cleaning_report,
        p.error, p.reading_progress, p.created_at, p.updated_at,
        COALESCE(l.status, '') AS log_status,
        (SELECT COUNT(*) FROM questions q WHERE q.paper_id = p.id AND q.status='open') AS open_questions,
@@ -161,6 +174,8 @@ def get_paper(pid: str):
 
 @router.patch("/{pid}")
 def patch_paper(pid: str, body: dict = Body(...)):
+    if not row("SELECT id FROM papers WHERE id=?", (pid,)):
+        raise HTTPException(404, "论文不存在")
     fields = {k: body[k] for k in META_FIELDS if k in body}
     if not fields:
         raise HTTPException(400, "无可更新字段")
@@ -173,8 +188,10 @@ def patch_paper(pid: str, body: dict = Body(...)):
 
 @router.delete("/{pid}")
 def delete_paper(pid: str):
+    if not row("SELECT id FROM papers WHERE id=?", (pid,)):
+        raise HTTPException(404, "论文不存在")
     with db() as c:
-        for t in ("blocks", "annotations", "questions", "research_log"):
+        for t in ("blocks", "annotations", "questions", "research_log", "sections"):
             c.execute(f"DELETE FROM {t} WHERE paper_id=?", (pid,))
         c.execute("DELETE FROM papers WHERE id=?", (pid,))
     shutil.rmtree(_paper_dir(pid), ignore_errors=True)
@@ -190,9 +207,9 @@ async def reparse(pid: str, background: BackgroundTasks, body: dict = Body(defau
     old_zh = {b["en"]: b["zh"] for b in
               rows("SELECT en, zh FROM blocks WHERE paper_id=? AND IFNULL(zh,'')!=''", (pid,))
               if b["en"]}
-    ex("DELETE FROM blocks WHERE paper_id=?", (pid,))
+    # 保留旧块直到新解析成功；process_paper 会在事务中一次性替换，失败时旧内容仍可读。
     ex("UPDATE papers SET status='pending_parse', translate_done=0, translate_total=0, "
-       "title_zh='', updated_at=? WHERE id=?", (now(), pid))
+       "updated_at=? WHERE id=?", (now(), pid))
     background.add_task(process_paper, pid, engine, old_zh)
     return {"ok": True}
 
@@ -280,9 +297,11 @@ def edit_block_zh(pid: str, bid: int, body: dict = Body(...)):
     zh = body.get("zh")
     if zh is None:
         raise HTTPException(400, "缺少 zh 字段")
+    if not row("SELECT id FROM blocks WHERE id=? AND paper_id=?", (bid, pid)):
+        raise HTTPException(404, "论文段落不存在")
     ex("UPDATE blocks SET zh=?, translate_status='done' WHERE id=? AND paper_id=?",
        (zh, bid, pid))
-    return row("SELECT * FROM blocks WHERE id=?", (bid,))
+    return row("SELECT * FROM blocks WHERE id=? AND paper_id=?", (bid, pid))
 
 
 @router.put("/{pid}/progress")
