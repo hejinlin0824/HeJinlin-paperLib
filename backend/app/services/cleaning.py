@@ -174,7 +174,8 @@ def clean_blocks(blocks, report=None):
     kept = []
     for i, block in enumerate(first_pass):
         info = keys.get(i)
-        page = (block.get("meta") or {}).get("page")
+        meta = block.get("meta") if isinstance(block.get("meta"), dict) else {}
+        page = meta.get("page")
         if info and info[0] in repeated:
             record_removed(report, "repeated_header_footer", info[1], page)
             continue

@@ -95,6 +95,8 @@ def test_backup_contains_consistent_database_snapshot_and_assets(monkeypatch, tm
         connection.execute("CREATE TABLE marker (value TEXT NOT NULL)")
         connection.execute("INSERT INTO marker(value) VALUES(?)", ("committed row",))
         connection.commit()
+    # Windows 下 with 语句不会真正关闭连接（只结束事务），残留文件锁会阻塞临时目录清理
+    connection.close()
 
     asset_dir = data_dir / "papers" / "p-test" / "assets"
     asset_dir.mkdir(parents=True)

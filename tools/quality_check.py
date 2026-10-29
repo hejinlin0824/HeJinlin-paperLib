@@ -11,6 +11,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "backend"))
 
+from app.services.cleaning import (  # noqa: E402  水印/脚注规则与清洗共用单一来源
+    ARXIV_STAMP,
+    PUBLICATION_STAMP,
+    is_standalone_footnote,
+)
+
 DB = Path(__file__).resolve().parent.parent / "data" / "library.db"
 
 NOISE = re.compile(

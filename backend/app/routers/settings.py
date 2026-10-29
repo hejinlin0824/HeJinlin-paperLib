@@ -152,9 +152,16 @@ def backup():
     with tempfile.TemporaryDirectory(prefix="paperlib-backup-") as temp_dir:
         snapshot = Path(temp_dir) / DB_PATH.name
         # sqlite3.Connection.backup includes committed WAL changes in a consistent snapshot.
-        with sqlite3.connect(DB_PATH, timeout=20) as source:
-            with sqlite3.connect(snapshot) as target:
-                source.backup(target)
+        # NOTE: `with sqlite3.connect(...)` only ends the transaction, it does NOT close the
+        # connection — on Windows the snapshot file would stay locked and break cleanup.
+        source = sqlite3.connect(DB_PATH, timeout=20)
+        target = sqlite3.connect(snapshot)
+        try:
+            source.backup(target)
+            target.commit()
+        finally:
+            target.close()
+            source.close()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.write(snapshot, DB_PATH.name)
             for p in sorted(DATA_DIR.rglob("*")):
