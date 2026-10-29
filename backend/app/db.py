@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS papers(
   translate_done INTEGER DEFAULT 0,
   translate_total INTEGER DEFAULT 0,
   error TEXT DEFAULT '',
+  cleaning_report TEXT DEFAULT '{}',
   created_at TEXT DEFAULT '',
   updated_at TEXT DEFAULT ''
 );
@@ -169,7 +170,8 @@ def _migrate(c):
         c.execute("ALTER TABLE papers ADD COLUMN title_locked INTEGER DEFAULT 0")
     for col, ddl in (("guide", "TEXT DEFAULT ''"),
                      ("explain_done", "INTEGER DEFAULT 0"),
-                     ("explain_total", "INTEGER DEFAULT 0")):
+                     ("explain_total", "INTEGER DEFAULT 0"),
+                     ("cleaning_report", "TEXT DEFAULT '{}'")):
         if col not in cols:
             c.execute(f"ALTER TABLE papers ADD COLUMN {col} {ddl}")
     bcols = {r[1] for r in c.execute("PRAGMA table_info(blocks)")}
