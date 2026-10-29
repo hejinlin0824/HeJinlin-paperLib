@@ -19,10 +19,7 @@ export function escapeHtml(s) {
 }
 
 function escapeRe(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\function escapeRe(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-')
 }
 
 function safeHref(raw) {
