@@ -23,6 +23,10 @@ const presets = ref({})
 const testResult = ref('')
 const parseResult = ref('')
 const testing = ref(false)
+const translateKeyConfigured = ref(false)
+const mineruTokenConfigured = ref(false)
+const clearTranslateKeyOnSave = ref(false)
+const clearMineruTokenOnSave = ref(false)
 
 const glossary = ref([])
 const gnew = reactive({ term_en: '', term_zh: '', note: '' })
@@ -30,7 +34,12 @@ const gnew = reactive({ term_en: '', term_zh: '', note: '' })
 async function load() {
   const d = await api.settings()
   presets.value = d.presets || {}
-  Object.assign(form, d.settings)
+  const safeSettings = { ...d.settings }
+  translateKeyConfigured.value = Boolean(safeSettings.translate_api_key_configured)
+  mineruTokenConfigured.value = Boolean(safeSettings.mineru_token_configured)
+  delete safeSettings.translate_api_key_configured
+  delete safeSettings.mineru_token_configured
+  Object.assign(form, safeSettings)
   glossary.value = await api.glossary()
 }
 
@@ -43,23 +52,59 @@ function onProviderChange() {
   testResult.value = ''
 }
 
+async function persistSettings() {
+  const d = await api.saveSettings({
+    ...form,
+    clear_translate_api_key: clearTranslateKeyOnSave.value,
+    clear_mineru_token: clearMineruTokenOnSave.value,
+  })
+  translateKeyConfigured.value = Boolean(d.translate_api_key_configured)
+  mineruTokenConfigured.value = Boolean(d.mineru_token_configured)
+  clearTranslateKeyOnSave.value = false
+  clearMineruTokenOnSave.value = false
+}
+function clearTranslateKey() {
+  form.translate_api_key = ''
+  clearTranslateKeyOnSave.value = true
+  translateKeyConfigured.value = false
+}
+function clearMineruToken() {
+  form.mineru_token = ''
+  clearMineruTokenOnSave.value = true
+  mineruTokenConfigured.value = false
+}
 async function save() {
-  await api.saveSettings({ ...form })
-  toast('设置已保存', 'ok')
+  try {
+    await persistSettings()
+    toast('设置已保存', 'ok')
+  } catch (e) {
+    toast('保存失败：' + e.message, 'err')
+  }
 }
 async function testEngine() {
   testing.value = true
-  await api.saveSettings({ ...form })
-  const r = await api.testTranslate()
-  testResult.value = r.message + (r.latency ? `（${r.latency}s）` : '')
-  toast(r.ok ? '测试通过' : '测试失败', r.ok ? 'ok' : 'err')
-  testing.value = false
+  try {
+    await persistSettings()
+    const r = await api.testTranslate()
+    testResult.value = r.message + (r.latency ? `（${r.latency}s）` : '')
+    toast(r.ok ? '测试通过' : '测试失败', r.ok ? 'ok' : 'err')
+  } catch (e) {
+    testResult.value = e.message
+    toast('保存或测试失败：' + e.message, 'err')
+  } finally {
+    testing.value = false
+  }
 }
 async function testParse() {
-  await api.saveSettings({ ...form })
-  const r = await api.testParse()
-  parseResult.value = r.message
-  toast(r.ok ? '可用' : '不可用', r.ok ? 'ok' : 'err')
+  try {
+    await persistSettings()
+    const r = await api.testParse()
+    parseResult.value = r.message
+    toast(r.ok ? '可用' : '不可用', r.ok ? 'ok' : 'err')
+  } catch (e) {
+    parseResult.value = e.message
+    toast('保存或测试失败：' + e.message, 'err')
+  }
 }
 
 async function addTerm() {
@@ -98,7 +143,15 @@ onMounted(load)
         <label>API 地址</label>
         <input class="input" v-model="form.translate_base_url" placeholder="https://api.deepseek.com/v1" />
         <label>API Key</label>
-        <input class="input" type="password" v-model="form.translate_api_key" placeholder="sk-…" />
+        <div>
+          <input class="input" type="password" v-model="form.translate_api_key"
+                 autocomplete="new-password" placeholder="输入新 Key；已有 Key 留空即可保留" />
+          <div class="desc" style="margin-top:4px">
+            {{ translateKeyConfigured && !form.translate_api_key ? '已保存。服务端不会回传密钥；留空代表不修改。' : '密钥仅保存在本机配置数据库中。' }}
+            <button v-if="translateKeyConfigured" class="btn sm danger" style="margin-left:6px"
+                    type="button" @click="clearTranslateKey">清除已保存 Key</button>
+          </div>
+        </div>
         <label>模型</label>
         <input class="input" v-model="form.translate_model" placeholder="deepseek-chat" />
         <label>温度</label>
@@ -132,7 +185,15 @@ onMounted(load)
         </select>
         <template v-if="form.parse_engine === 'mineru_api'">
           <label>MinerU Token</label>
-          <input class="input" type="password" v-model="form.mineru_token" placeholder="在 mineru.net 获取" />
+          <div>
+            <input class="input" type="password" v-model="form.mineru_token"
+                   autocomplete="new-password" placeholder="输入新 Token；已有 Token 留空即可保留" />
+            <div class="desc" style="margin-top:4px">
+              {{ mineruTokenConfigured && !form.mineru_token ? '已保存。留空代表不修改。' : '云端解析时会将 PDF 上传给 MinerU。' }}
+              <button v-if="mineruTokenConfigured" class="btn sm danger" style="margin-left:6px"
+                      type="button" @click="clearMineruToken">清除已保存 Token</button>
+            </div>
+          </div>
         </template>
       </div>
       <div style="display:flex; gap:10px; margin-top:16px; align-items:center;">
