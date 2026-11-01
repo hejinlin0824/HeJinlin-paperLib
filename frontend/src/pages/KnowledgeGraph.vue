@@ -167,7 +167,7 @@ function fitCamera(duration = 250) {
 
 function renderGraph(data) {
   graphData.value = data
-  if (!renderer) return
+  ensureRenderer()
   const visible = data.nodes.filter(n => showDust.value || n.degree > 0 || n.is_library_paper)
   const keep = new Set(visible.map(n => n.id))
   const shownEdges = data.edges.filter(e => keep.has(e.source) && keep.has(e.target))
@@ -363,10 +363,14 @@ function onSearch() {
   loadGraph()
 }
 
-onMounted(async () => {
-  try {
+function ensureRenderer() {
+  // 惰性初始化：默认视图是"知识总览"，画布容器在 v-show 下 display:none（宽度 0），
+  // Sigma 构造时会抛 "Container has no width"。因此只在第一次真正渲染图时创建；
+  // allowInvalidContainer 兜底极端时序（refresh 时会重新量测容器尺寸）。
+  if (renderer) return
   graph = new Graph()
   renderer = new Sigma(graph, document.getElementById('kg-canvas'), {
+    allowInvalidContainer: true,
     nodeProgramClasses: { glow: GlowNodeProgram },
     enableEdgeEvents: true,
     minCameraRatio: 0.06,
@@ -455,13 +459,17 @@ onMounted(async () => {
   renderer.on('leaveEdge', () => {
     if (hoveredEdge) { hoveredEdge = null; renderer.refresh({ skipIndexation: true }) }
   })
+}
+
+onMounted(async () => {
+  try {
     await Promise.all([loadOverview(), openTopics()])
     papers.value = await api.papers().catch(() => [])
     const jobs = await api.kgJobs().catch(() => [])
     if (jobs.some(j => j.status === 'running' || j.status === 'pending')) watchJobs()
   } catch (e) {
     window.__kgInitError = String(e?.stack || e)
-    toast('星图初始化失败：' + (e?.message || e), 'err')
+    toast('初始化失败：' + (e?.message || e), 'err')
   }
 })
 
