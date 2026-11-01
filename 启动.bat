@@ -75,6 +75,12 @@ popd
 
 if not exist "frontend\dist\index.html" goto :err_dist
 
+rem CI can verify the complete preflight/build path without leaving a server process running.
+if /I "%PAPERLIB_BUILD_ONLY%"=="1" (
+  echo [5/5] Production launcher build/preflight passed.
+  exit /b 0
+)
+
 rem 5) Check the port only AFTER the build. Never silently open a stale dev server.
 netstat -ano | findstr /R /C:":8300 .*LISTENING" >nul 2>&1
 if not errorlevel 1 goto :err_port
