@@ -31,11 +31,27 @@ echo [SAFE] Checking the existing paper library (read-only)...
 ".venv\Scripts\python.exe" tools\check_library.py
 if errorlevel 1 goto :err_library
 
-rem 3) Synchronize backend dependencies.
-echo [2/5] Checking backend dependencies...
-".venv\Scripts\python.exe" -m pip install -q -r backend\requirements.txt
-if errorlevel 1 goto :err_backend_deps
+rem 3) Install backend dependencies only when the requirements file changed or the venv is unhealthy.
+set "BACKEND_READY=.venv\.paperlib-backend-ready"
+set "REQ_TIME="
+set "STAMP_TIME="
+for %%I in (backend\requirements.txt) do set "REQ_TIME=%%~tI"
+if exist "%BACKEND_READY%" for %%I in ("%BACKEND_READY%") do set "STAMP_TIME=%%~tI"
+if "%REQ_TIME%"=="%STAMP_TIME%" (
+  ".venv\Scripts\python.exe" -c "import fastapi, uvicorn, httpx, fitz, multipart" >nul 2>&1
+  if not errorlevel 1 (
+    ".venv\Scripts\python.exe" -m pip check >nul 2>&1
+    if not errorlevel 1 goto :backend_deps_ready
+  )
+)
 
+:install_backend_deps
+echo [2/5] Installing/checking backend dependencies...
+".venv\Scripts\python.exe" -m pip install -q --disable-pip-version-check -r backend\requirements.txt
+if errorlevel 1 goto :err_backend_deps
+type nul > "%BACKEND_READY%"
+
+:backend_deps_ready
 rem 4) Ensure frontend dependencies exist, then ALWAYS build the production frontend.
 rem     Do not trust an old frontend\dist\index.html: it may belong to an older checkout.
 echo [3/5] Checking frontend dependencies...
