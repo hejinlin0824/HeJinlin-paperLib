@@ -105,6 +105,22 @@ def replace_paper_extraction(pid: str, entities: list, relations: list) -> dict:
             "INSERT INTO kg_evidence(id, entity_id, relation_id, paper_id, block_id, "
             "evidence_text, section_name, confidence, evidence_type, created_at) "
             "VALUES(?,?,?,?,?,?,?,?,?,?)", pending)
+        # Relation-level evidence_type/confidence are materialized summaries. Recompute
+        # them from the surviving evidence after replacement; never keep a stale
+        # "explicit" label or confidence from an evidence row that was just removed.
+        c.execute(
+            "UPDATE kg_relations SET "
+            "evidence_type=CASE "
+            "WHEN EXISTS(SELECT 1 FROM kg_evidence ev WHERE ev.relation_id=kg_relations.id "
+            "AND ev.evidence_type='explicit') THEN 'explicit' "
+            "WHEN EXISTS(SELECT 1 FROM kg_evidence ev WHERE ev.relation_id=kg_relations.id "
+            "AND ev.evidence_type='inferred') THEN 'inferred' "
+            "WHEN EXISTS(SELECT 1 FROM kg_evidence ev WHERE ev.relation_id=kg_relations.id "
+            "AND ev.evidence_type='similarity') THEN 'similarity' "
+            "ELSE kg_relations.evidence_type END, "
+            "confidence=COALESCE((SELECT MAX(ev.confidence) FROM kg_evidence ev "
+            "WHERE ev.relation_id=kg_relations.id), kg_relations.confidence)"
+        )
         resolver.purge_orphans(c)
     stats["evidence"] = len(pending)
     return stats
