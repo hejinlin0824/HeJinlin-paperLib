@@ -540,3 +540,28 @@ def test_schema_rejects_inferred_relation_even_when_quote_exists(kg_db):
     assert entities
     assert all(r.relation_type != "MITIGATES" for r in relations)
     assert any("不是原文明示" in warning for warning in warnings)
+
+
+def test_rejected_relations_are_hidden_but_recoverable(kg_db):
+    seed_paper("review-paper")
+    _store_good("review-paper")
+    relation = app_db.row(
+        "SELECT id FROM kg_relations WHERE relation_type='MITIGATES'")
+    app_db.ex("UPDATE kg_relations SET review_status='rejected' WHERE id=?",
+              (relation["id"],))
+
+    normal = kg_queries.graph(paper_id="review-paper")
+    with_rejected = kg_queries.graph(
+        paper_id="review-paper", include_rejected=True)
+
+    assert len(normal["edges"]) == 2
+    assert len(with_rejected["edges"]) == 3
+    rejected = next(e for e in with_rejected["edges"] if e["id"] == relation["id"])
+    assert rejected["review_status"] == "rejected"
+
+
+def test_relation_review_state_migrates_as_unreviewed(kg_db):
+    relation_cols = {
+        r["name"] for r in app_db.rows("PRAGMA table_info(kg_relations)")
+    }
+    assert "review_status" in relation_cols
