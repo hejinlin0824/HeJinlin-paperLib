@@ -13,32 +13,6 @@ import { toast } from '../stores'
 
 const Sigma = SigmaPkg.default ?? SigmaPkg.Sigma
 
-// ---------- 自定义"星光"着色器：中心白热 → 类型色 → 透明衰减（参考真实星图的
-// additive glow 做法；替代实心圆/贴图方案，纯 WebGL 程序无贴图加载） ----------
-const GLOW_FRAGMENT = `
-precision mediump float;
-varying vec4 v_color;
-varying float v_border;
-void main(void) {
-  #ifdef PICKING_MODE
-  gl_FragColor = v_color;
-  #else
-  float dist = length(gl_PointCoord - vec2(0.5, 0.5)) * 2.0;
-  float falloff = pow(max(0.0, 1.0 - dist), 1.8);
-  vec3 core = mix(v_color.rgb, vec3(1.0), pow(max(0.0, 1.0 - dist), 3.0) * 0.85);
-  // sigma 用预乘 alpha 混合（blendFunc(ONE, ONE_MINUS_SRC_ALPHA)），RGB 必须乘 alpha
-  gl_FragColor = vec4(core * falloff, v_color.a * falloff);
-  #endif
-}
-`
-
-class GlowNodeProgram extends NodePointProgram {
-  getDefinition() {
-    const def = super.getDefinition()
-    return { ...def, FRAGMENT_SHADER_SOURCE: GLOW_FRAGMENT }
-  }
-}
-
 const overview = ref(null)
 const papers = ref([])
 const view = ref('overview')
@@ -89,56 +63,47 @@ const presentTypes = computed(() => {
     .map(([t, n]) => ({ t, n, ...(TYPE_STYLE[t] || { color: '#9aa7b8', zh: t }) }))
 })
 
-// ---------- 关系拓扑布局 ----------
-// 位置只由真实边结构决定，不把共享实体强行归属给“最先遍历到”的论文。
-// 因此一个方法被多篇论文使用时，会自然处在多个关系簇之间；坐标不代表语义相似度。
-function forcePositions(nodes, edges) {
-  const count = nodes.length
-  if (!count) return {}
-  const index = new Map(nodes.map((n, i) => [n.id, i]))
-  const positions = nodes.map((_, i) => {
-    const angle = i * 2.399963
-    const radius = 55 * Math.sqrt(i + 1)
-    return { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius }
-  })
-  const links = edges.map(e => [index.get(e.source), index.get(e.target)])
-    .filter(([a, b]) => a !== undefined && b !== undefined && a !== b)
-  const area = Math.max(90000, count * 18000)
-  const k = Math.sqrt(area / count)
-  const iterations = count > 260 ? 36 : 52
+// ---------- 语义分列布局 ----------
+// 节点按实体类别分列，列内按连接度与名称稳定排序。列只表达“类别”，
+// 不暗示节点间的语义距离；真实关系仍只由数据库中的边决定。
+const TYPE_LANE = {
+  Paper: 0,
+  ResearchProblem: 1,
+  Algorithm: 2,
+  Model: 3,
+  Concept: 4,
+  Task: 4,
+  Dataset: 5,
+  Metric: 5,
+  Finding: 6,
+  ResearchArea: 6,
+  Author: 7,
+  Venue: 7,
+  Institution: 7,
+}
+const LANE_GAP = 250
+const ROW_GAP = 92
 
-  for (let step = 0; step < iterations; step++) {
-    const disp = positions.map(() => ({ x: 0, y: 0 }))
-    for (let i = 0; i < count; i++) {
-      for (let j = i + 1; j < count; j++) {
-        let dx = positions[i].x - positions[j].x
-        let dy = positions[i].y - positions[j].y
-        let dist = Math.hypot(dx, dy) || 0.01
-        if (dist < 0.01) { dx = 0.01 * (i + 1); dy = 0.01 * (j + 1); dist = Math.hypot(dx, dy) }
-        const force = (k * k) / dist
-        const fx = (dx / dist) * force, fy = (dy / dist) * force
-        disp[i].x += fx; disp[i].y += fy
-        disp[j].x -= fx; disp[j].y -= fy
-      }
-    }
-    for (const [a, b] of links) {
-      const dx = positions[a].x - positions[b].x
-      const dy = positions[a].y - positions[b].y
-      const dist = Math.hypot(dx, dy) || 0.01
-      const force = (dist * dist) / k
-      const fx = (dx / dist) * force, fy = (dy / dist) * force
-      disp[a].x -= fx; disp[a].y -= fy
-      disp[b].x += fx; disp[b].y += fy
-    }
-    const temperature = 24 * (1 - step / iterations)
-    for (let i = 0; i < count; i++) {
-      const mag = Math.hypot(disp[i].x, disp[i].y) || 0.01
-      const scale = Math.min(mag, temperature) / mag
-      positions[i].x += disp[i].x * scale
-      positions[i].y += disp[i].y * scale
-    }
+function forcePositions(nodes) {
+  const lanes = new Map()
+  for (const node of nodes) {
+    const lane = TYPE_LANE[node.type] ?? 4
+    if (!lanes.has(lane)) lanes.set(lane, [])
+    lanes.get(lane).push(node)
   }
-  return Object.fromEntries(nodes.map((n, i) => [n.id, positions[i]]))
+  const result = {}
+  for (const [lane, items] of lanes) {
+    items.sort((a, b) => (b.degree || 0) - (a.degree || 0)
+      || String(a.label_zh || a.label).localeCompare(String(b.label_zh || b.label), 'zh-CN'))
+    const center = (items.length - 1) / 2
+    items.forEach((node, index) => {
+      result[node.id] = {
+        x: lane * LANE_GAP,
+        y: (index - center) * ROW_GAP,
+      }
+    })
+  }
+  return result
 }
 
 // ---------- sigma 渲染 ----------
@@ -173,36 +138,48 @@ function renderGraph(data) {
   const shownEdges = data.edges.filter(e => keep.has(e.source) && keep.has(e.target))
   nodeCount.value = visible.length
   edgeCount.value = shownEdges.length
-  const pos = forcePositions(visible, shownEdges)
+  const pos = forcePositions(visible)
 
   hoveredNode = null
   hoveredNeighbors = new Set()
   graph.clear()
   visible.forEach(n => {
-    const st = TYPE_STYLE[n.type] || { color: '#9aa7b8' }
+    const st = TYPE_STYLE[n.type] || { color: '#718096' }
     const isPaper = n.type === 'Paper'
-    const secondary = ['Author', 'Institution', 'Venue'].includes(n.type)
-    const size = isPaper ? 24 : secondary ? 4.5 : Math.min(15, 6 + Math.sqrt(n.degree) * 1.5)
     graph.addNode(n.id, {
       x: pos[n.id]?.x ?? 0, y: pos[n.id]?.y ?? 0,
-      size,
-      color: isPaper ? '#9cc8ff' : st.color,
+      size: isPaper ? 13 : Math.min(10, 6 + Math.sqrt(n.degree || 0)),
+      color: isPaper ? '#294f78' : st.color,
+      label: n.label_zh || n.label,
       _color: st.color,
-      label: secondary ? null : (n.label_zh || n.label),
-      type: 'glow',
       _paper: isPaper,
-      _secondary: secondary,
     })
   })
-  shownEdges.forEach(e => {
-    graph.addEdgeWithKey(e.id, e.source, e.target, {
-      size: 1,
-      color: e.evidence_type === 'explicit' ? '#3d5a94' : e.evidence_type === 'similarity' ? '#7862a8' : '#a8684d',
-      _label: (REL_ZH[e.relation_type] || e.relation_type) +
-              `（${EVI_LABEL[e.evidence_type] || e.evidence_type}）`,
-      _rid: e.id,
+  // 同一对端点可能有多种关系（例如论文既“提出”又“对比”某算法）。
+  // Sigma 的普通 Graph 不允许平行边，因此按有向端点聚合成一条可视连线，
+  // 原始关系 ID 全部保留，点击后在详情面板中逐条选择。
+  const edgeGroups = new Map()
+  for (const e of shownEdges) {
+    const pairKey = JSON.stringify([e.source, e.target])
+    if (!edgeGroups.has(pairKey)) edgeGroups.set(pairKey, [])
+    edgeGroups.get(pairKey).push(e)
+  }
+  for (const [pairKey, relations] of edgeGroups) {
+    const first = relations[0]
+    const kinds = new Set(relations.map(e => e.evidence_type))
+    const color = kinds.has('inferred') ? '#c47a43'
+      : kinds.has('similarity') ? '#8064a9' : '#6887a8'
+    const labels = [...new Set(relations.map(e =>
+      (REL_ZH[e.relation_type] || e.relation_type) + ' · ' +
+      (EVI_LABEL[e.evidence_type] || e.evidence_type)))]
+    graph.addEdgeWithKey('pair:' + pairKey, first.source, first.target, {
+      size: Math.min(3, 1.15 + Math.log2(relations.length)),
+      color,
+      _label: labels.join(' / '),
+      _rids: relations.map(e => e.id),
+      _relationCount: relations.length,
     })
-  })
+  }
   fitCamera(focusNode ? 0 : 250)
   if (focusNode && graph.hasNode(focusNode)) {
     const a = graph.getNodeAttributes(focusNode)
@@ -371,26 +348,25 @@ function ensureRenderer() {
   graph = new Graph()
   renderer = new Sigma(graph, document.getElementById('kg-canvas'), {
     allowInvalidContainer: true,
-    nodeProgramClasses: { glow: GlowNodeProgram },
     enableEdgeEvents: true,
     minCameraRatio: 0.06,
     maxCameraRatio: 10,
     labelRenderedSizeThreshold: 15,
-    nodeLabelSize: 13,
-    nodeLabelColor: '#e9efff',
+    nodeLabelSize: 12,
+    nodeLabelColor: '#263548',
     labelWeight: '600',
     edgeLabelSize: 11,
-    edgeLabelColor: '#c9d6f5',
+    edgeLabelColor: '#334155',
     renderEdgeLabels: true,
     defaultDrawNodeLabel(context, data, settings) {
       if (!data.label) return
-      const s = settings.nodeLabelSize || 13
+      const s = settings.nodeLabelSize || 12
       const col = data._color || '#dfe7ff'
       context.font = `${settings.labelWeight || '600'} ${s}px "PingFang SC","Microsoft YaHei",system-ui,sans-serif`
-      context.strokeStyle = 'rgba(4,8,20,.9)'
-      context.lineWidth = 3.5
-      context.strokeText(data.label, data.x + data.size + 4, data.y + s / 3)
-      context.fillStyle = col
+      context.strokeStyle = 'rgba(255,255,255,.96)'
+      context.lineWidth = 4
+      context.strokeText(data.label, data.x + data.size + 5, data.y + s / 3)
+      context.fillStyle = '#263548'
       context.fillText(data.label, data.x + data.size + 4, data.y + s / 3)
     },
     defaultDrawNodeHover(context, data, settings) {
@@ -400,14 +376,14 @@ function ensureRenderer() {
       context.font = `700 ${s}px "PingFang SC","Microsoft YaHei",system-ui,sans-serif`
       const w = context.measureText(data.label).width
       const x = data.x + data.size + 6, y = data.y - s
-      context.fillStyle = 'rgba(8, 14, 32, .88)'
+      context.fillStyle = 'rgba(255,255,255,.98)'
       context.beginPath()
       context.roundRect(x - 6, y - 4, w + 12, s + 10, 6)
       context.fill()
       context.strokeStyle = col + '88'
       context.lineWidth = 1
       context.stroke()
-      context.fillStyle = '#f2f6ff'
+      context.fillStyle = '#1f2937'
       context.fillText(data.label, x, y + s - 2)
     },
     nodeReducer(node, data) {
@@ -422,26 +398,30 @@ function ensureRenderer() {
       return res
     },
     edgeReducer(edge, data) {
-      const res = { ...data, label: null }  // 默认不显示线标签，点亮/悬停时才出现
+      const res = { ...data, label: null }  // 默认保持画面简洁，悬停时显示关系语义
       if (hoveredNode) {
         const [s, t] = graph.extremities(edge)
         if (s !== hoveredNode && t !== hoveredNode) {
           res.hidden = true
         } else {
           res.size = 2
-          res.color = '#8fb4ff'
+          res.color = '#315f8b'
           res.label = data._label
         }
       } else if (hoveredEdge === edge) {
         res.size = 2
-        res.color = '#8fb4ff'
+        res.color = '#315f8b'
         res.label = data._label
       }
       return res
     },
   })
   renderer.on('clickNode', ({ node }) => onNodeTap(node))
-  renderer.on('clickEdge', ({ edge }) => openRelation(graph.getEdgeAttribute(edge, '_rid')))
+  renderer.on('clickEdge', ({ edge }) => {
+    const rids = graph.getEdgeAttribute(edge, '_rids') || []
+    if (rids.length === 1) openRelation(rids[0])
+    else if (rids.length > 1) panel.value = { kind: 'relationGroup', rids }
+  })
   renderer.on('enterNode', ({ node }) => {
     hoveredNode = node
     hoveredNeighbors = new Set(graph.neighbors(node))
