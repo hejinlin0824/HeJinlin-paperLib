@@ -68,9 +68,7 @@ jobs:
           node-version: "20"
       - name: Prepare Python environment
         shell: pwsh
-        run: |
-          python -m venv .venv
-          .\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
+        run: python -m venv .venv
       - name: Install frontend dependencies
         working-directory: frontend
         run: npm ci
