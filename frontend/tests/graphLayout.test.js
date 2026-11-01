@@ -40,12 +40,15 @@ test('empty graph returns safe bounds and camera defaults', () => {
   assert.deepEqual(computeSemanticLayout([]).bounds, null)
   assert.deepEqual(computeCameraFit(null, { width: 0, height: 0 }), { x: 0, y: 0, ratio: 1 })
 })
-test('fit-all camera centers non-origin bounds and includes both dimensions', () => {
+test('fit-all camera uses Sigma normalized-space fit ratio, independent of graph units and viewport pixels', () => {
   const fit = computeCameraFit({ minX: 1000, maxX: 5000, minY: -400, maxY: 400 },
     { width: 1000, height: 600 }, { padding: 50 })
+  const scaled = computeCameraFit({ minX: 1e6, maxX: 5e6, minY: -4e5, maxY: 4e5 },
+    { width: 320, height: 180 }, { padding: 900 })
   assert.equal(fit.x, 3000)
   assert.equal(fit.y, 0)
-  assert.equal(fit.ratio, 4.1)
+  assert.equal(fit.ratio, 1)
+  assert.equal(scaled.ratio, 1)
 })
 
 test('camera targets convert graph-space centers into Sigma framed-graph coordinates', () => {
