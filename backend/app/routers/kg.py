@@ -20,6 +20,7 @@ def graph(paper_id: str | None = Query(None),
           relation_types: str | None = Query(None, description="逗号分隔的关系类型"),
           evidence_types: str | None = Query("explicit", description="证据类型：explicit/inferred/similarity；默认仅原文明确证据"),
           include_rejected: bool = Query(False, description="是否显示已人工驳回的关系"),
+          focus_entity_id: str | None = Query(None, max_length=120, description="围绕一个实体显示一跳局部图"),
           q: str | None = Query(None, max_length=120),
           limit: int = Query(250, ge=20, le=400)):
     return kg_queries.graph(
@@ -28,7 +29,7 @@ def graph(paper_id: str | None = Query(None),
         types=[x for x in (types or "").split(",") if x] or None,
         relation_types=[x for x in (relation_types or "").split(",") if x] or None,
         evidence_types=[x for x in (evidence_types or "").split(",") if x],
-        include_rejected=include_rejected, q=q, limit=limit)
+        include_rejected=include_rejected, focus_entity_id=focus_entity_id, q=q, limit=limit)
 
 
 @router.get("/entities")
