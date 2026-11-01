@@ -6,11 +6,14 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:graph": "node --test tests/graphEdges.test.js"
   },
   "dependencies": {
+    "graphology": "^0.26.0",
     "katex": "^0.16.11",
     "pdfjs-dist": "^4.8.69",
+    "sigma": "^3.0.3",
     "vue": "^3.5.13",
     "vue-router": "^4.5.0"
   },

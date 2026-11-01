@@ -114,6 +114,14 @@ async def process_paper(pid: str, engine: str | None = None, old_zh: dict | None
         pass
     if get_settings().get("auto_translate", "1") == "1":
         await tsvc.translate_paper_job(pid, force=False)
+    # 知识图谱自动抽取（设置可关；失败只记日志，不影响解析/翻译结果）
+    if get_settings().get("kg_auto_extract", "1") == "1":
+        try:
+            from ..services import kg_extract
+            await kg_extract.auto_extract(pid)
+        except Exception:  # noqa: BLE001
+            import traceback
+            traceback.print_exc()
 
 
 @router.post("/upload")
@@ -132,7 +140,7 @@ async def upload(background: BackgroundTasks, file: UploadFile = File(...)):
 
 
 LIST_SQL = """
-SELECT p.id, p.title, p.title_zh, p.authors, p.year, p.venue, p.tags, p.rating,
+SELECT p.id, p.title, p.title_zh, p.authors, p.year, p.venue, p.tags, p.rating, p.library_role,
        p.status, p.parse_engine, p.translate_engine, p.translate_done, p.translate_total,
        p.guide, p.explain_done, p.explain_total, p.cleaning_report,
        p.error, p.reading_progress, p.created_at, p.updated_at,
@@ -194,6 +202,9 @@ def delete_paper(pid: str):
         for t in ("blocks", "annotations", "questions", "research_log", "sections"):
             c.execute(f"DELETE FROM {t} WHERE paper_id=?", (pid,))
         c.execute("DELETE FROM papers WHERE id=?", (pid,))
+    # 知识图谱：删该论文的证据与任务，并清理因此孤儿化的实体/关系
+    from ..services.kg_resolver import drop_paper_data
+    drop_paper_data(pid)
     shutil.rmtree(_paper_dir(pid), ignore_errors=True)
     return {"ok": True}
 

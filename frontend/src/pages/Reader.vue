@@ -447,6 +447,28 @@ function scrollToBlock(id) {
   })
 }
 
+// ---------- 知识图谱联动：当前论文的知识结构（全部可跳回原文） ----------
+const kgStruct = ref(null)
+const kgLoading = ref(false)
+const KG_BUCKETS = [
+  ['problems', '❓ 研究问题'], ['proposals', '⚙️ 提出的方法'], ['datasets', '🗂️ 数据集'],
+  ['metrics', '📏 评价指标'], ['models', '🧱 模型'], ['findings', '📊 实验发现'],
+  ['related', '🔗 相关工作'], ['areas', '🌐 研究领域'], ['people', '👤 作者/发表'],
+]
+const kgSections = computed(() => {
+  if (!kgStruct.value) return []
+  return KG_BUCKETS
+    .map(([k, label]) => ({ label, items: kgStruct.value[k] || [] }))
+    .filter(s => s.items.length)
+})
+async function loadKg() {
+  if (kgStruct.value || kgLoading.value) return
+  kgLoading.value = true
+  try {
+    kgStruct.value = await api.kgPaperStructure(pid)
+  } catch { kgStruct.value = null } finally { kgLoading.value = false }
+}
+
 const STATUS_MAP = {
   pending_parse: ['解析排队中', 'yellow'], parsing: ['解析中', 'yellow'],
   queued: ['翻译排队中', 'yellow'], translating: ['翻译中', 'blue'],
@@ -460,6 +482,17 @@ onMounted(async () => {
   document.addEventListener('mouseup', onMouseUp)
   try { await loadAll() } catch (e) { toast('加载失败：' + e.message, 'err') }
   if (ACTIVE.has(paper.value?.status)) startPoll()
+  // 从知识图谱「定位原文」跳转进来：滚动到证据所在块。
+  // 深链用瞬时定位——容器 CSS 是 scroll-behavior:smooth，平滑动画在
+  // 隐藏/后台标签页会被丢弃，且跨几千像素的平滑飞行体验也差。
+  const bid = route.query.block
+  if (bid) {
+    await nextTick()
+    setTimeout(() => {
+      contentRef.value?.querySelector(`[data-block-id="${bid}"]`)
+        ?.scrollIntoView({ block: 'center', behavior: 'instant' })
+    }, 350)
+  }
 })
 onBeforeUnmount(() => {
   document.removeEventListener('mouseup', onMouseUp)
@@ -528,6 +561,7 @@ onBeforeUnmount(() => {
           <div :class="{ active: sideTab === 'notes' }" @click="sideTab = 'notes'">
             批注<span v-if="annotations.length">({{ annotations.length }})</span></div>
           <div :class="{ active: sideTab === 'refs' }" @click="sideTab = 'refs'">文献</div>
+          <div :class="{ active: sideTab === 'kg' }" @click="sideTab = 'kg'; loadKg()">图谱</div>
         </div>
         <div class="panel">
           <template v-if="sideTab === 'outline'">
@@ -561,11 +595,32 @@ onBeforeUnmount(() => {
             <div v-if="!annotations.length" class="muted" style="padding:10px">
               选中正文文字可高亮/加粗；段落工具条可写批注、记问题、做小结</div>
           </template>
-          <template v-else>
+          <template v-else-if="sideTab === 'refs'">
             <div v-for="(r, i) in refsEntries" :key="i" class="side-item" style="white-space:normal">
               {{ r }}
             </div>
             <div v-if="!refsEntries.length" class="muted" style="padding:10px">未解析到参考文献</div>
+          </template>
+          <template v-else-if="sideTab === 'kg'">
+            <div v-if="kgLoading" class="muted" style="padding:10px">加载中…</div>
+            <template v-else-if="kgSections.length">
+              <div v-if="kgStruct.job && kgStruct.job.status === 'failed'"
+                   class="muted" style="padding:8px 10px;font-size:12px;background:#f9f4e8;border-radius:6px;margin-bottom:8px">
+                图谱抽取未完成：{{ kgStruct.job.error }}（可到知识图谱页重试）</div>
+              <div v-for="sec in kgSections" :key="sec.label">
+                <div class="kg-sec">{{ sec.label }}</div>
+                <div v-for="it in sec.items" :key="it.entity_id + ':' + it.relation_id"
+                     class="side-item kg-item" style="white-space:normal"
+                     :title="'点击定位原文证据'" @click="it.block_id && scrollToBlock(it.block_id)">
+                  <span class="t" style="font-weight:600">{{ it.name_zh || it.name }}</span>
+                  <span v-if="it.evidence_text" class="kg-quote">“{{ it.evidence_text.slice(0, 64) }}…”</span>
+                </div>
+              </div>
+              <router-link to="/graph" class="kg-golink">在全局知识网络中查看 ↗</router-link>
+            </template>
+            <div v-else class="muted" style="padding:10px;line-height:1.8">
+              这篇论文还没进知识图谱。<br>到「知识图谱」页点「⚗ 抽取缺失论文」，
+              AI 会按章节抽取研究问题/方法/数据集等，每条都带原文证据。</div>
           </template>
         </div>
       </aside>
@@ -713,4 +768,12 @@ onBeforeUnmount(() => {
   padding: 10px 14px; border-radius: 9px; font-size: 12.5px; line-height: 1.6;
   box-shadow: 0 8px 24px rgba(0,0,0,.3);
 }
+.kg-sec {
+  font-size: 12px; font-weight: 700; color: var(--ink-3); margin: 12px 0 4px;
+  padding-left: 10px; letter-spacing: .5px;
+}
+.kg-item { display: flex; flex-direction: column; gap: 2px; padding: 6px 10px; cursor: pointer; }
+.kg-item:hover { background: var(--accent-soft); }
+.kg-quote { font-size: 11.5px; color: var(--ink-3); line-height: 1.5; }
+.kg-golink { display: inline-block; margin-top: 12px; font-size: 12.5px; }
 </style>

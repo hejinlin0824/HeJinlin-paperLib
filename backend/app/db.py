@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS papers(
   venue TEXT DEFAULT '',
   doi TEXT DEFAULT '',
   status TEXT DEFAULT 'pending_parse',
+  library_role TEXT NOT NULL DEFAULT 'normal',
   tags TEXT DEFAULT '',
   rating INTEGER DEFAULT 0,
   reading_progress TEXT DEFAULT '',
@@ -102,6 +103,70 @@ CREATE TABLE IF NOT EXISTS dict_cards(
   context_note TEXT DEFAULT '',
   created_at TEXT DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS kg_entities(
+  id TEXT PRIMARY KEY,
+  entity_type TEXT NOT NULL,
+  canonical_name TEXT NOT NULL,
+  normalized_name TEXT NOT NULL,
+  name_zh TEXT DEFAULT '',
+  description TEXT DEFAULT '',
+  metadata_json TEXT DEFAULT '{}',
+  created_at TEXT DEFAULT '',
+  updated_at TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_kg_ent_norm ON kg_entities(entity_type, normalized_name);
+CREATE TABLE IF NOT EXISTS kg_entity_aliases(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entity_id TEXT NOT NULL,
+  alias TEXT NOT NULL,
+  normalized_alias TEXT NOT NULL,
+  source TEXT DEFAULT '',
+  UNIQUE(entity_id, normalized_alias)
+);
+CREATE INDEX IF NOT EXISTS idx_kg_alias_norm ON kg_entity_aliases(normalized_alias);
+CREATE TABLE IF NOT EXISTS kg_relations(
+  id TEXT PRIMARY KEY,
+  source_entity_id TEXT NOT NULL,
+  target_entity_id TEXT NOT NULL,
+  relation_type TEXT NOT NULL,
+  evidence_type TEXT NOT NULL DEFAULT 'explicit',
+  confidence REAL NOT NULL DEFAULT 0.5,
+  status TEXT NOT NULL DEFAULT 'active',
+  created_by_paper TEXT DEFAULT '',
+  created_at TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_kg_rel_src ON kg_relations(source_entity_id);
+CREATE INDEX IF NOT EXISTS idx_kg_rel_tgt ON kg_relations(target_entity_id);
+CREATE TABLE IF NOT EXISTS kg_evidence(
+  id TEXT PRIMARY KEY,
+  entity_id TEXT DEFAULT '',
+  relation_id TEXT DEFAULT '',
+  paper_id TEXT NOT NULL,
+  block_id INTEGER,
+  evidence_text TEXT NOT NULL,
+  section_name TEXT DEFAULT '',
+  confidence REAL DEFAULT 0.5,
+  evidence_type TEXT NOT NULL DEFAULT 'explicit',
+  created_at TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_kg_evi_paper ON kg_evidence(paper_id);
+CREATE INDEX IF NOT EXISTS idx_kg_evi_rel ON kg_evidence(relation_id);
+CREATE INDEX IF NOT EXISTS idx_kg_evi_ent ON kg_evidence(entity_id);
+CREATE TABLE IF NOT EXISTS kg_extraction_jobs(
+  id TEXT PRIMARY KEY,
+  paper_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  stage TEXT DEFAULT '',
+  progress REAL DEFAULT 0,
+  error_message TEXT DEFAULT '',
+  extraction_version TEXT DEFAULT '',
+  model_name TEXT DEFAULT '',
+  prompt_version TEXT DEFAULT '',
+  stats_json TEXT DEFAULT '{}',
+  created_at TEXT DEFAULT '',
+  updated_at TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_kg_job_paper ON kg_extraction_jobs(paper_id, status);
 """
 
 DEFAULT_SETTINGS = {
@@ -117,6 +182,8 @@ DEFAULT_SETTINGS = {
     "mineru_token": "",
     # 解析完成后自动开始翻译
     "auto_translate": "1",
+    # 解析完成后自动抽取知识图谱（可在设置页关闭）
+    "kg_auto_extract": "1",
 }
 
 
@@ -159,6 +226,7 @@ def init_db():
         c.executescript(SCHEMA)
         c.execute("PRAGMA journal_mode=WAL")
         _migrate(c)
+        _create_kg_views(c)
         for k, v in DEFAULT_SETTINGS.items():
             c.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", (k, v))
 
@@ -168,6 +236,8 @@ def _migrate(c):
     cols = {r[1] for r in c.execute("PRAGMA table_info(papers)")}
     if "title_locked" not in cols:
         c.execute("ALTER TABLE papers ADD COLUMN title_locked INTEGER DEFAULT 0")
+    if "library_role" not in cols:
+        c.execute("ALTER TABLE papers ADD COLUMN library_role TEXT NOT NULL DEFAULT 'normal'")
     for col, ddl in (("guide", "TEXT DEFAULT ''"),
                      ("explain_done", "INTEGER DEFAULT 0"),
                      ("explain_total", "INTEGER DEFAULT 0"),
@@ -178,6 +248,46 @@ def _migrate(c):
     for col in ("plain", "ask"):
         if col not in bcols:
             c.execute(f"ALTER TABLE blocks ADD COLUMN {col} TEXT DEFAULT ''")
+    kg_cols = {r[1] for r in c.execute("PRAGMA table_info(kg_entities)")}
+    if "name_zh" not in kg_cols:
+        c.execute("ALTER TABLE kg_entities ADD COLUMN name_zh TEXT DEFAULT ''")
+
+
+def _create_kg_views(c):
+    """Read-only graph views: test/excluded papers never leak into user-facing KG APIs."""
+    c.executescript("""
+    DROP VIEW IF EXISTS kg_visible_entities;
+    DROP VIEW IF EXISTS kg_visible_relations;
+    DROP VIEW IF EXISTS kg_visible_evidence;
+    DROP VIEW IF EXISTS kg_visible_jobs;
+    CREATE VIEW kg_visible_evidence AS
+      SELECT ev.* FROM kg_evidence ev
+      JOIN papers p ON p.id=ev.paper_id
+      WHERE COALESCE(p.library_role, 'normal')='normal';
+    CREATE VIEW kg_visible_relations AS
+      SELECT r.id, r.source_entity_id, r.target_entity_id, r.relation_type,
+             CASE
+               WHEN EXISTS (SELECT 1 FROM kg_visible_evidence ev
+                            WHERE ev.relation_id=r.id AND ev.evidence_type='explicit') THEN 'explicit'
+               WHEN EXISTS (SELECT 1 FROM kg_visible_evidence ev
+                            WHERE ev.relation_id=r.id AND ev.evidence_type='inferred') THEN 'inferred'
+               ELSE 'similarity'
+             END AS evidence_type,
+             COALESCE((SELECT MAX(ev.confidence) FROM kg_visible_evidence ev
+                       WHERE ev.relation_id=r.id), 0.5) AS confidence,
+             r.status, r.created_by_paper, r.created_at
+      FROM kg_relations r
+      WHERE EXISTS (SELECT 1 FROM kg_visible_evidence ev WHERE ev.relation_id=r.id);
+    CREATE VIEW kg_visible_entities AS
+      SELECT e.* FROM kg_entities e
+      WHERE EXISTS (SELECT 1 FROM kg_visible_evidence ev WHERE ev.entity_id=e.id)
+         OR EXISTS (SELECT 1 FROM kg_visible_relations r
+                    WHERE r.source_entity_id=e.id OR r.target_entity_id=e.id);
+    CREATE VIEW kg_visible_jobs AS
+      SELECT j.* FROM kg_extraction_jobs j
+      JOIN papers p ON p.id=j.paper_id
+      WHERE COALESCE(p.library_role, 'normal')='normal';
+    """)
 
 
 # ---------- settings 便捷方法 ----------
