@@ -258,6 +258,8 @@ async function refreshCurrentGraph() {
       include_rejected: showRejected.value ? 'true' : 'false',
     })
     if (requestId === graphRequestSequence && view.value === 'topics') renderGraph(data)
+  } catch (e) {
+    if (requestId === graphRequestSequence) toast('关系视图刷新失败：' + e.message, 'err')
   } finally {
     if (requestId === graphRequestSequence) loading.value = false
   }
