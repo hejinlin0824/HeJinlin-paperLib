@@ -40,6 +40,7 @@ def graph(paper_id: str | None = None, entity_ids: list[str] | None = None,
           types: list[str] | None = None, relation_types: list[str] | None = None,
           evidence_types: list[str] | None = None,
           include_rejected: bool = False,
+          focus_entity_id: str | None = None,
           q: str | None = None, limit: int = 250) -> dict:
     """Query a graph. By default only source-explicit relations are shown.
 
@@ -62,7 +63,26 @@ def graph(paper_id: str | None = None, entity_ids: list[str] | None = None,
             (*selected, *types))}
         return [i for i in selected if i in keep]
 
-    if entity_ids:
+    if focus_entity_id:
+        # A local graph is deliberately bounded to the selected node and its strongest
+        # direct neighbours. This follows the search/expand interaction used by graph
+        # exploration tools instead of dumping the entire database into one scene.
+        focus = row("SELECT id FROM kg_visible_entities WHERE id=?", (focus_entity_id,))
+        if focus:
+            ids = [focus_entity_id]
+            if evidence_types:
+                marks_e = ",".join("?" * len(evidence_types))
+                focus_edges = rows(
+                    "SELECT source_entity_id, target_entity_id FROM kg_visible_relations "
+                    "WHERE (source_entity_id=? OR target_entity_id=?) "
+                    f"AND evidence_type IN ({marks_e}) "
+                    + ("" if include_rejected else "AND review_status!='rejected' ")
+                    + "ORDER BY confidence DESC LIMIT 30",
+                    (focus_entity_id, focus_entity_id, *evidence_types))
+                for edge in focus_edges:
+                    ids.extend([edge["source_entity_id"], edge["target_entity_id"]])
+            ids = list(dict.fromkeys(ids))
+    elif entity_ids:
         ids = entity_ids[:200]
     elif paper_id:
         ids = [r["entity_id"] for r in rows(
