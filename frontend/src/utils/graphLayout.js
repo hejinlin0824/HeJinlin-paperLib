@@ -78,3 +78,11 @@ export function computeCameraFit(bounds, viewport, options = {}) {
   return { x: (bounds.minX + bounds.maxX) / 2, y: (bounds.minY + bounds.maxY) / 2,
     ratio: Math.min(maxRatio, Math.max(minRatio, ratio)) }
 }
+
+/** Convert a graph-space point to the normalized coordinates expected by Sigma's camera. */
+export function toFramedCameraPoint(renderer, point) {
+  if (!renderer || typeof renderer.graphToFramedGraph !== 'function') return { x: 0.5, y: 0.5 }
+  const framed = renderer.graphToFramedGraph(point)
+  if (!framed || !Number.isFinite(framed.x) || !Number.isFinite(framed.y)) return { x: 0.5, y: 0.5 }
+  return { x: framed.x, y: framed.y }
+}
