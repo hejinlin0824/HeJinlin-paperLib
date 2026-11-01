@@ -10,6 +10,7 @@ on:
     branches:
       - main
       - "feature/**"
+      - "fix/**"
   workflow_dispatch:
 
 permissions:
