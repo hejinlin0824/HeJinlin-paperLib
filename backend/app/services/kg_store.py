@@ -119,7 +119,10 @@ def replace_paper_extraction(pid: str, entities: list, relations: list) -> dict:
             "AND ev.evidence_type='similarity') THEN 'similarity' "
             "ELSE kg_relations.evidence_type END, "
             "confidence=COALESCE((SELECT MAX(ev.confidence) FROM kg_evidence ev "
-            "WHERE ev.relation_id=kg_relations.id), kg_relations.confidence)"
+            "WHERE ev.relation_id=kg_relations.id), kg_relations.confidence), "
+            "review_status=CASE WHEN EXISTS(SELECT 1 FROM kg_evidence ev "
+            "WHERE ev.relation_id=kg_relations.id AND ev.evidence_type='explicit') "
+            "THEN kg_relations.review_status ELSE 'unreviewed' END"
         )
         resolver.purge_orphans(c)
     stats["evidence"] = len(pending)
