@@ -583,3 +583,17 @@ def test_overview_reports_manual_review_coverage(kg_db):
     assert review["verified"] == 1
     assert review["rejected"] == 1
     assert review["unreviewed"] == 1
+
+
+def test_focus_graph_is_bounded_to_one_hop_neighbours(kg_db):
+    seed_paper("focus-paper")
+    _store_good("focus-paper")
+    algorithm = app_db.row(
+        "SELECT id FROM kg_entities WHERE canonical_name='FedProx'")
+    focused = kg_queries.graph(focus_entity_id=algorithm["id"])
+
+    node_ids = {node["id"] for node in focused["nodes"]}
+    assert algorithm["id"] in node_ids
+    assert len(node_ids) <= 31
+    assert focused["edges"]
+    assert kg_queries.graph(focus_entity_id="missing-entity")["nodes"] == []
