@@ -103,9 +103,11 @@ def _new_job(pid: str, model: str = "") -> dict:
 
 def create_job(pid: str) -> dict:
     """手动触发：校验论文可抽取且无进行中任务。"""
-    p = row("SELECT status FROM papers WHERE id=?", (pid,))
+    p = row("SELECT status, library_role FROM papers WHERE id=?", (pid,))
     if not p:
         raise RuntimeError("论文不存在")
+    if p.get("library_role", "normal") != "normal":
+        raise RuntimeError("该论文已标记为测试/排除数据，不参与知识图谱抽取")
     if p["status"] in ("pending_parse", "parsing"):
         raise RuntimeError("论文还在解析中，解析完成后再抽取")
     if not rows("SELECT id FROM blocks WHERE paper_id=? LIMIT 1", (pid,)):
@@ -121,7 +123,7 @@ def create_job(pid: str) -> dict:
 def rebuild_missing() -> list[str]:
     """为已解析但缺当前版本抽取结果的论文建任务（幂等，不重复抽取）。"""
     out = []
-    for p in rows("SELECT id FROM papers WHERE status IN ('parsed','ready')"):
+    for p in rows("SELECT id FROM papers WHERE status IN ('parsed','ready') AND COALESCE(library_role, 'normal')='normal'"):
         done = row("SELECT id FROM kg_extraction_jobs WHERE paper_id=? AND "
                    "status='completed' AND prompt_version=?",
                    (p["id"], PROMPT_VERSION))
@@ -139,6 +141,10 @@ async def run_job(job_id: str):
     if not job:
         return
     pid = job["paper_id"]
+    paper_scope = row("SELECT library_role FROM papers WHERE id=?", (pid,))
+    if not paper_scope or paper_scope.get("library_role", "normal") != "normal":
+        _mark(job_id, status="cancelled", stage="", error_message="论文已标记为测试/排除数据，跳过图谱抽取")
+        return
     info = engine_info()
     ok, err = engine_ready(info)
     if not ok:
@@ -207,8 +213,8 @@ async def auto_extract(pid: str):
     ok, _ = engine_ready(info)
     if not ok or info["provider"] == "mock":
         return
-    p = row("SELECT status FROM papers WHERE id=?", (pid,))
-    if not p or p["status"] not in ("parsed", "ready"):
+    p = row("SELECT status, library_role FROM papers WHERE id=?", (pid,))
+    if not p or p.get("library_role", "normal") != "normal" or p["status"] not in ("parsed", "ready"):
         return
     if row("SELECT id FROM kg_extraction_jobs WHERE paper_id=? AND "
            "status IN ('pending','running')", (pid,)):
@@ -227,7 +233,7 @@ NAME_ZH_SYSTEM = """你是学术术语翻译助手。把给定的科研实体名
 
 async def translate_missing_names(limit: int = 300) -> int:
     """为还没有中文名的实体批量翻译（每批 60 个）。返回更新数量。"""
-    ents = rows("SELECT id, canonical_name FROM kg_entities "
+    ents = rows("SELECT id, canonical_name FROM kg_visible_entities "
                 "WHERE IFNULL(name_zh,'')='' LIMIT ?", (int(limit),))
     if not ents:
         return 0

@@ -41,7 +41,7 @@ class GlowNodeProgram extends NodePointProgram {
 
 const overview = ref(null)
 const papers = ref([])
-const view = ref('global')
+const view = ref('overview')
 const selPaper = ref('')
 const q = ref('')
 const activeTypes = ref(new Set())
@@ -51,6 +51,7 @@ const graphData = ref(null)
 const loading = ref(false)
 const panel = ref({ kind: 'empty' })
 const topics = ref([])
+const sharedResources = ref([])
 const activeTopic = ref(null)
 const job = ref(null)
 const jobsTimer = ref(null)
@@ -88,42 +89,56 @@ const presentTypes = computed(() => {
     .map(([t, n]) => ({ t, n, ...(TYPE_STYLE[t] || { color: '#9aa7b8', zh: t }) }))
 })
 
-// ---------- 银河布局：论文=恒星内环，实体按最近归属绕成黄金角旋臂，孤岛撒星尘 ----------
-function galaxyPositions(nodes, edges) {
-  const adj = {}
-  edges.forEach(e => {
-    (adj[e.source] ||= new Set()).add(e.target);
-    (adj[e.target] ||= new Set()).add(e.source)
+// ---------- 关系拓扑布局 ----------
+// 位置只由真实边结构决定，不把共享实体强行归属给“最先遍历到”的论文。
+// 因此一个方法被多篇论文使用时，会自然处在多个关系簇之间；坐标不代表语义相似度。
+function forcePositions(nodes, edges) {
+  const count = nodes.length
+  if (!count) return {}
+  const index = new Map(nodes.map((n, i) => [n.id, i]))
+  const positions = nodes.map((_, i) => {
+    const angle = i * 2.399963
+    const radius = 55 * Math.sqrt(i + 1)
+    return { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius }
   })
-  const papers = nodes.filter(n => n.type === 'Paper')
-  const owner = {}
-  const queue = []
-  papers.forEach(p => { owner[p.id] = p.id; queue.push(p.id) })
-  while (queue.length) {
-    const cur = queue.shift();
-    (adj[cur] || []).forEach(nb => {
-      if (!(nb in owner)) { owner[nb] = owner[cur]; queue.push(nb) }
-    })
+  const links = edges.map(e => [index.get(e.source), index.get(e.target)])
+    .filter(([a, b]) => a !== undefined && b !== undefined && a !== b)
+  const area = Math.max(90000, count * 18000)
+  const k = Math.sqrt(area / count)
+  const iterations = count > 260 ? 36 : 52
+
+  for (let step = 0; step < iterations; step++) {
+    const disp = positions.map(() => ({ x: 0, y: 0 }))
+    for (let i = 0; i < count; i++) {
+      for (let j = i + 1; j < count; j++) {
+        let dx = positions[i].x - positions[j].x
+        let dy = positions[i].y - positions[j].y
+        let dist = Math.hypot(dx, dy) || 0.01
+        if (dist < 0.01) { dx = 0.01 * (i + 1); dy = 0.01 * (j + 1); dist = Math.hypot(dx, dy) }
+        const force = (k * k) / dist
+        const fx = (dx / dist) * force, fy = (dy / dist) * force
+        disp[i].x += fx; disp[i].y += fy
+        disp[j].x -= fx; disp[j].y -= fy
+      }
+    }
+    for (const [a, b] of links) {
+      const dx = positions[a].x - positions[b].x
+      const dy = positions[a].y - positions[b].y
+      const dist = Math.hypot(dx, dy) || 0.01
+      const force = (dist * dist) / k
+      const fx = (dx / dist) * force, fy = (dy / dist) * force
+      disp[a].x -= fx; disp[a].y -= fy
+      disp[b].x += fx; disp[b].y += fy
+    }
+    const temperature = 24 * (1 - step / iterations)
+    for (let i = 0; i < count; i++) {
+      const mag = Math.hypot(disp[i].x, disp[i].y) || 0.01
+      const scale = Math.min(mag, temperature) / mag
+      positions[i].x += disp[i].x * scale
+      positions[i].y += disp[i].y * scale
+    }
   }
-  const pos = {}
-  const GA = 2.399963
-  papers.forEach((p, k) => {
-    const angle = (k * 2 * Math.PI) / Math.max(1, papers.length) - Math.PI / 2
-    const R = 300
-    const px = Math.cos(angle) * R, py = Math.sin(angle) * R * 0.72
-    pos[p.id] = { x: px, y: py }
-    nodes.filter(n => owner[n.id] === p.id && n.id !== p.id).forEach((m, j) => {
-      const a = angle + j * GA
-      const r = 66 + Math.sqrt(j) * 42
-      pos[m.id] = { x: px + Math.cos(a) * r, y: py + Math.sin(a) * r * 0.8 }
-    })
-  })
-  nodes.filter(n => !(n.id in pos)).forEach((m, j) => {
-    const a = j * GA
-    const r = 430 + (j % 7) * 26
-    pos[m.id] = { x: Math.cos(a) * r, y: Math.sin(a) * r * 0.8 }
-  })
-  return pos
+  return Object.fromEntries(nodes.map((n, i) => [n.id, positions[i]]))
 }
 
 // ---------- sigma 渲染 ----------
@@ -158,7 +173,7 @@ function renderGraph(data) {
   const shownEdges = data.edges.filter(e => keep.has(e.source) && keep.has(e.target))
   nodeCount.value = visible.length
   edgeCount.value = shownEdges.length
-  const pos = galaxyPositions(visible, shownEdges)
+  const pos = forcePositions(visible, shownEdges)
 
   hoveredNode = null
   hoveredNeighbors = new Set()
@@ -166,23 +181,25 @@ function renderGraph(data) {
   visible.forEach(n => {
     const st = TYPE_STYLE[n.type] || { color: '#9aa7b8' }
     const isPaper = n.type === 'Paper'
-    const size = isPaper ? 30 : Math.min(18, 7 + Math.sqrt(n.degree) * 2.2)
+    const secondary = ['Author', 'Institution', 'Venue'].includes(n.type)
+    const size = isPaper ? 24 : secondary ? 4.5 : Math.min(15, 6 + Math.sqrt(n.degree) * 1.5)
     graph.addNode(n.id, {
       x: pos[n.id]?.x ?? 0, y: pos[n.id]?.y ?? 0,
       size,
       color: isPaper ? '#9cc8ff' : st.color,
       _color: st.color,
-      label: n.label_zh || n.label,
+      label: secondary ? null : (n.label_zh || n.label),
       type: 'glow',
       _paper: isPaper,
+      _secondary: secondary,
     })
   })
   shownEdges.forEach(e => {
     graph.addEdgeWithKey(e.id, e.source, e.target, {
       size: 1,
-      color: e.evidence_type === 'explicit' ? '#3d5a94' : '#a8684d',
+      color: e.evidence_type === 'explicit' ? '#3d5a94' : e.evidence_type === 'similarity' ? '#7862a8' : '#a8684d',
       _label: (REL_ZH[e.relation_type] || e.relation_type) +
-              `（${e.evidence_type === 'explicit' ? '原文' : '推断'} ${Math.round(e.confidence * 100)}%）`,
+              `（${EVI_LABEL[e.evidence_type] || e.evidence_type}）`,
       _rid: e.id,
     })
   })
@@ -227,7 +244,9 @@ function toggleDust() {
 
 async function openTopics() {
   try {
-    topics.value = (await api.kgTopics()).topics
+    const data = await api.kgTopics()
+    topics.value = data.topics || []
+    sharedResources.value = data.shared_resources || []
   } catch (e) {
     toast('主题加载失败：' + e.message, 'err')
   }
@@ -248,8 +267,22 @@ function switchView(v) {
   view.value = v
   panel.value = { kind: 'empty' }
   activeTopic.value = null
-  if (v === 'topics') openTopics()
-  else loadGraph()
+  if (v === 'topics') { openTopics(); loadGraph() }
+  else if (v === 'global') loadGraph()
+}
+
+const looksLikeTestPaper = p => /\\b(test|dummy|mock|fixture|sample|demo)\\b|测试|示例|样例/i.test(p.title_zh || p.title || '')
+
+async function changePaperScope(p, role) {
+  try {
+    await api.kgSetPaperScope(p.id, role)
+    p.library_role = role
+    toast(role === 'normal' ? '已恢复纳入知识图谱' : '已从知识图谱中排除；原始论文和证据均保留', 'ok')
+    await Promise.all([loadOverview(), openTopics()])
+    if (view.value === 'global') await loadGraph()
+  } catch (e) {
+    toast('分类更新失败：' + e.message, 'err')
+  }
 }
 
 // ---------- 详情面板 ----------
@@ -422,10 +455,10 @@ onMounted(async () => {
   renderer.on('leaveEdge', () => {
     if (hoveredEdge) { hoveredEdge = null; renderer.refresh({ skipIndexation: true }) }
   })
-    await Promise.all([loadOverview(), loadGraph(), openTopics()])
+    await Promise.all([loadOverview(), openTopics()])
+    papers.value = await api.papers().catch(() => [])
     const jobs = await api.kgJobs().catch(() => [])
     if (jobs.some(j => j.status === 'running' || j.status === 'pending')) watchJobs()
-    papers.value = await api.papers().catch(() => [])
   } catch (e) {
     window.__kgInitError = String(e?.stack || e)
     toast('星图初始化失败：' + (e?.message || e), 'err')
@@ -442,18 +475,19 @@ onBeforeUnmount(() => {
   <div class="kg-page">
     <div class="kg-head">
       <div>
-        <h1 class="page-title">知识星图</h1>
+        <h1 class="page-title">科研知识地图</h1>
         <p class="page-sub" v-if="overview">
           {{ overview.entities_total }} 个知识点 · {{ overview.relations_total }} 条关系 ·
           已纳入 {{ overview.papers_extracted }}/{{ overview.papers_total }} 篇论文 ·
-          每条线都有原文依据<template v-if="overview.inferred_relations">
-           （{{ overview.inferred_relations }} 条为 AI 推断，橙线）</template>
+          每条关系均可追溯到论文证据<template v-if="overview.inferred_relations || overview.similarity_relations">
+           （AI 推断 {{ overview.inferred_relations || 0 }} 条 · 语义相似 {{ overview.similarity_relations || 0 }} 条）</template>
         </p>
       </div>
       <div class="kg-actions">
         <div class="seg">
-          <button :class="{ on: view === 'global' }" @click="switchView('global')">星系全景</button>
-          <button :class="{ on: view === 'topics' }" @click="switchView('topics')">主题星域</button>
+          <button :class="{ on: view === 'overview' }" @click="switchView('overview')">知识总览</button>
+          <button :class="{ on: view === 'topics' }" @click="switchView('topics')">研究主题</button>
+          <button :class="{ on: view === 'global' }" @click="switchView('global')">关系探索</button>
         </div>
         <button class="btn sm" @click="startRebuild" title="为还没有图谱数据的论文自动抽取">⚗ 抽取缺失论文</button>
       </div>
@@ -492,10 +526,42 @@ onBeforeUnmount(() => {
       </select>
     </div>
 
-    <div class="kg-body">
+    <section v-if="view === 'overview'" class="kg-overview">
+      <div class="kg-metrics">
+        <article class="kg-metric"><span>纳入论文</span><strong>{{ overview?.papers_total || 0 }}</strong><small>仅统计正常文献</small></article>
+        <article class="kg-metric"><span>已建立知识结构</span><strong>{{ overview?.papers_extracted || 0 }}</strong><small>有可追溯的抽取证据</small></article>
+        <article class="kg-metric"><span>知识实体</span><strong>{{ overview?.entities_total || 0 }}</strong><small>方法、问题、数据集等</small></article>
+        <article class="kg-metric"><span>有证据的关系</span><strong>{{ overview?.relations_total || 0 }}</strong><small>推断关系 {{ overview?.inferred_relations || 0 }} 条推断 · {{ overview?.similarity_relations || 0 }} 条相似，分别标记</small></article>
+      </div>
+      <div class="kg-overview-grid">
+        <section class="kg-overview-card">
+          <div class="kg-card-head"><h3>研究主题</h3><button class="btn sm" @click="switchView('topics')">查看全部</button></div>
+          <p v-if="!topics.length" class="muted">目前还没有足够的明确研究领域关系形成主题。系统不会把“共同使用 CIFAR-10”误判成同一个研究方向。</p>
+          <button v-for="t in topics.slice(0,6)" :key="t.name" class="kg-overview-topic" @click="switchView('topics'); pickTopic(t)">
+            <span><b>{{ t.name_zh || t.name }}</b><small>{{ t.paper_count }} 篇论文 · {{ t.entity_ids.length }} 个相关知识点</small></span><span>›</span>
+          </button>
+        </section>
+        <section class="kg-overview-card">
+          <div class="kg-card-head"><h3>共享实验资源</h3><span class="muted">不是研究主题</span></div>
+          <p v-if="!sharedResources.length" class="muted">暂未发现被多篇论文共同使用的数据集。</p>
+          <div v-for="d in sharedResources.slice(0,6)" :key="d.id" class="kg-resource-row"><b>{{ d.name }}</b><span>{{ d.paper_count }} 篇论文使用</span></div>
+        </section>
+      </div>
+      <section class="kg-overview-card kg-paper-audit">
+        <div class="kg-card-head"><div><h3>论文纳入范围</h3><p class="muted">可将测试论文或演示数据排除出知识图谱。这里只改变图谱分类，不删除论文、原文或证据。</p></div><button class="btn sm" @click="startRebuild">抽取缺失论文</button></div>
+        <div v-for="p in papers" :key="p.id" class="kg-paper-row">
+          <div class="kg-paper-title"><b>{{ p.title_zh || p.title }}</b><small v-if="looksLikeTestPaper(p)" class="kg-review-flag">标题疑似测试数据，请人工确认</small><small>{{ p.year || '年份未知' }} · {{ p.status }}</small></div>
+          <select class="select kg-scope-select" :value="p.library_role || 'normal'" @change="changePaperScope(p, $event.target.value)">
+            <option value="normal">正常文献（纳入）</option><option value="test">测试数据（排除）</option><option value="excluded">其他排除项</option>
+          </select>
+        </div>
+      </section>
+    </section>
+
+    <div v-show="view !== 'overview'" class="kg-body">
       <div v-if="view === 'topics'" class="kg-topiclist">
         <div v-if="!topics.length" class="muted" style="padding:12px">
-          还没有主题。先在全景里抽取论文，研究领域出现后会自动聚成星域。</div>
+          还没有明确主题。先抽取论文并形成 ResearchArea 关系；共享数据集只代表实验资源重合，不会被伪装成研究主题。</div>
         <div v-for="(t, i) in topics" :key="i" class="topic-item"
              :class="{ on: activeTopic === t }" @click="pickTopic(t)">
           <div class="t-name">{{ t.name_zh || t.name }}</div>
@@ -517,8 +583,9 @@ onBeforeUnmount(() => {
           </span>
           <span class="lg-item"><i class="lg-line"></i>蓝线 = 论文原话</span>
           <span class="lg-item"><i class="lg-line inf"></i>橙线 = AI 推断</span>
+          <span class="lg-item"><i class="lg-line sim"></i>紫线 = 语义相似（不代表技术继承）</span>
         </div>
-        <div class="kg-tip">悬停星体只点亮它的连线 · 滚轮缩放 · 拖动平移</div>
+        <div class="kg-tip">悬停节点查看直接关系 · 滚轮缩放 · 拖动平移 · 位置只表示连接结构</div>
       </div>
 
       <aside class="kg-panel">
@@ -572,10 +639,10 @@ onBeforeUnmount(() => {
               <b class="rel-type" :class="{ inf: panel.d.evidence_type !== 'explicit' }">{{ REL_ZH[panel.d.relation_type] || panel.d.relation_type }}</b>
               {{ zhName(panel.d.target) }}</h3>
             <div class="muted" style="font-size:12px">
-              置信度 {{ Math.round(panel.d.confidence * 100) }}% ·
               <span :class="{ 'ev-warn': panel.d.evidence_type !== 'explicit' }">
                 {{ EVI_LABEL[panel.d.evidence_type] || panel.d.evidence_type }}</span>
-              <template v-if="panel.d.evidence_type !== 'explicit'">（论文没直接说，AI 根据上下文推断）</template>
+              <template v-if="panel.d.evidence_type === 'inferred'">（AI 根据论文上下文推断，需结合原文判断）</template>
+              <template v-else-if="panel.d.evidence_type === 'similarity'">（语义相似，不代表技术继承或因果关系）</template>
             </div>
           </div>
           <div class="p-sec">
@@ -706,6 +773,7 @@ onBeforeUnmount(() => {
 .lg-line { width: 16px !important; height: 0 !important; border-radius: 0 !important;
   border-top: 1.5px solid #3d5a94; }
 .lg-line.inf { border-top-color: #a8684d; }
+.lg-line.sim { border-top-color: #7862a8; }
 .kg-tip { position: absolute; top: 12px; right: 16px; z-index: 2; font-size: 12px;
   color: #8fa5d8; background: rgba(10, 18, 38, .55); border: 1px solid #1d2c52;
   padding: 4px 10px; border-radius: 12px; }
@@ -743,4 +811,40 @@ onBeforeUnmount(() => {
 .progressbar { height: 6px; border-radius: 4px; background: #e5e3dc; overflow: hidden; }
 .progressbar > div { height: 100%; background: var(--accent); transition: width .4s; }
 .muted { color: var(--ink-3); }
+
+
+/* Research-first overview: the graph remains available as an advanced exploration view. */
+.kg-overview { display:flex; flex-direction:column; gap:16px; padding:18px 0 28px; color:var(--text, #202938); }
+.kg-metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; }
+.kg-metric, .kg-overview-card { background:var(--card, #fff); border:1px solid var(--line, #e5e9ef); border-radius:12px; }
+.kg-metric { padding:16px 18px; display:flex; flex-direction:column; gap:5px; }
+.kg-metric span { color:var(--muted, #77808e); font-size:12px; }
+.kg-metric strong { font-size:28px; line-height:1.2; font-weight:700; color:var(--text, #202938); }
+.kg-metric small, .kg-overview-topic small, .kg-paper-title small { color:var(--muted, #77808e); font-size:11px; }
+.kg-overview-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.kg-overview-card { padding:16px; min-width:0; }
+.kg-card-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
+.kg-card-head h3 { margin:0; font-size:15px; font-weight:700; }
+.kg-card-head p { margin:5px 0 0; font-size:12px; }
+.kg-overview-topic { width:100%; border:0; border-top:1px solid var(--line, #e5e9ef); background:transparent; padding:12px 2px; display:flex; align-items:center; justify-content:space-between; text-align:left; color:inherit; cursor:pointer; }
+.kg-overview-topic:hover { background:var(--hover, #f7f9fc); }
+.kg-overview-topic span:first-child { display:flex; flex-direction:column; gap:4px; }
+.kg-overview-topic span:last-child { font-size:20px; color:var(--muted, #77808e); }
+.kg-resource-row { display:flex; justify-content:space-between; gap:10px; padding:11px 2px; border-top:1px solid var(--line, #e5e9ef); font-size:13px; }
+.kg-resource-row span { color:var(--muted, #77808e); font-size:12px; }
+.kg-paper-audit { padding-bottom:8px; }
+.kg-paper-row { display:flex; align-items:center; justify-content:space-between; gap:16px; border-top:1px solid var(--line, #e5e9ef); padding:10px 2px; }
+.kg-paper-title { min-width:0; display:flex; flex-direction:column; gap:3px; }
+.kg-paper-title b { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; }
+.kg-scope-select { width:190px; flex:none; }
+.kg-review-flag { color:#a15b19 !important; }
+@media (max-width:900px) {
+  .kg-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .kg-overview-grid { grid-template-columns:1fr; }
+}
+@media (max-width:600px) {
+  .kg-paper-row { align-items:flex-start; flex-direction:column; }
+  .kg-scope-select { width:100%; }
+}
+
 </style>

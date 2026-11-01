@@ -2,7 +2,7 @@
 from fastapi import APIRouter, BackgroundTasks, Body, HTTPException, Query
 
 from ..db import ex, row, rows
-from ..services import kg_extract, kg_queries
+from ..services import kg_extract, kg_queries, kg_eligibility
 from ..util import now
 
 router = APIRouter(prefix="/api/knowledge-graph", tags=["knowledge-graph"])
@@ -45,9 +45,23 @@ def search_entities(q: str = Query("", max_length=120),
     args.append(max(1, min(limit, 200)))
     return rows(
         f"SELECT e.id, e.entity_type, e.canonical_name AS name, e.description, "
-        f"(SELECT COUNT(*) FROM kg_relations r WHERE r.source_entity_id=e.id OR "
-        f"r.target_entity_id=e.id) degree FROM kg_entities e {where} "
+        f"(SELECT COUNT(*) FROM kg_visible_relations r WHERE r.source_entity_id=e.id OR "
+        f"r.target_entity_id=e.id) degree FROM kg_visible_entities e {where} "
         f"ORDER BY degree DESC, LENGTH(e.canonical_name) LIMIT ?", tuple(args))
+
+
+@router.patch("/papers/{pid}/scope")
+def set_paper_scope(pid: str, body: dict = Body(...)):
+    """把论文标记为正常文献、测试数据或排除项；不会删除任何原始数据。"""
+    role = str(body.get("library_role") or "").strip().lower()
+    try:
+        updated = kg_eligibility.set_paper_role(pid, role)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if not updated:
+        raise HTTPException(404, "论文不存在")
+    return {"paper_id": pid, "library_role": role,
+            "message": "分类已更新；测试/排除论文不会再出现在知识图谱中"}
 
 
 @router.get("/entities/{eid}")
@@ -60,7 +74,7 @@ def entity_detail(eid: str):
 
 @router.get("/entities/{eid}/neighbors")
 def entity_neighbors(eid: str, limit: int = Query(60, ge=10, le=120)):
-    if not row("SELECT id FROM kg_entities WHERE id=?", (eid,)):
+    if not row("SELECT id FROM kg_visible_entities WHERE id=?", (eid,)):
         raise HTTPException(404, "实体不存在")
     return kg_queries.neighbors(eid, limit)
 
@@ -122,12 +136,12 @@ async def rebuild(background: BackgroundTasks):
 
 @router.post("/jobs/{job_id}/retry")
 async def retry_job(job_id: str, background: BackgroundTasks):
-    job = row("SELECT * FROM kg_extraction_jobs WHERE id=?", (job_id,))
+    job = row("SELECT * FROM kg_visible_jobs WHERE id=?", (job_id,))
     if not job:
         raise HTTPException(404, "任务不存在")
     if job["status"] in ("pending", "running"):
         raise HTTPException(409, "任务已在进行中")
-    busy = row("SELECT id FROM kg_extraction_jobs WHERE paper_id=? AND id!=? AND "
+    busy = row("SELECT id FROM kg_visible_jobs WHERE paper_id=? AND id!=? AND "
                "status IN ('pending','running')", (job["paper_id"], job_id))
     if busy:
         raise HTTPException(409, "该论文已有其他抽取任务在进行中")

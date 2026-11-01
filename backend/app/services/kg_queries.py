@@ -10,23 +10,25 @@ MAX_NODES = 400
 
 def overview() -> dict:
     ent_counts = {r["entity_type"]: r["n"] for r in rows(
-        "SELECT entity_type, COUNT(*) n FROM kg_entities GROUP BY entity_type")}
+        "SELECT entity_type, COUNT(*) n FROM kg_visible_entities GROUP BY entity_type")}
     rel_counts = {r["relation_type"]: r["n"] for r in rows(
-        "SELECT relation_type, COUNT(*) n FROM kg_relations GROUP BY relation_type")}
+        "SELECT relation_type, COUNT(*) n FROM kg_visible_relations GROUP BY relation_type")}
     job_counts = {r["status"]: r["n"] for r in rows(
-        "SELECT status, COUNT(*) n FROM kg_extraction_jobs GROUP BY status")}
+        "SELECT status, COUNT(*) n FROM kg_visible_jobs GROUP BY status")}
     return {
-        "papers_total": row("SELECT COUNT(*) n FROM papers")["n"],
+        "papers_total": row("SELECT COUNT(*) n FROM papers WHERE COALESCE(library_role, 'normal')='normal'")["n"],
         "papers_extracted": row(
-            "SELECT COUNT(DISTINCT paper_id) n FROM kg_evidence "
+            "SELECT COUNT(DISTINCT paper_id) n FROM kg_visible_evidence "
             "WHERE IFNULL(entity_id,'')!=''")["n"],
         "entities_total": sum(ent_counts.values()),
         "entities": {t: ent_counts.get(t, 0) for t in sorted(ENTITY_TYPES) if ent_counts.get(t)},
         "relations_total": sum(rel_counts.values()),
         "relations": rel_counts,
         "inferred_relations": row(
-            "SELECT COUNT(*) n FROM kg_relations WHERE evidence_type!='explicit'")["n"],
-        "evidence_total": row("SELECT COUNT(*) n FROM kg_evidence")["n"],
+            "SELECT COUNT(*) n FROM kg_visible_relations WHERE evidence_type='inferred'")["n"],
+        "similarity_relations": row(
+            "SELECT COUNT(*) n FROM kg_visible_relations WHERE evidence_type='similarity'")["n"],
+        "evidence_total": row("SELECT COUNT(*) n FROM kg_visible_evidence")["n"],
         "jobs": job_counts,
     }
 
@@ -43,7 +45,7 @@ def graph(paper_id: str | None = None, entity_ids: list[str] | None = None,
         if not types:
             return selected
         keep = {r["id"] for r in rows(
-            f"SELECT id FROM kg_entities WHERE id IN ({','.join('?' * len(selected))}) "
+            f"SELECT id FROM kg_visible_entities WHERE id IN ({','.join('?' * len(selected))}) "
             "AND entity_type IN (" + ",".join("?" * len(types)) + ")",
             (*selected, *types))}
         return [i for i in selected if i in keep]
@@ -52,38 +54,38 @@ def graph(paper_id: str | None = None, entity_ids: list[str] | None = None,
         ids = entity_ids[:200]
     elif paper_id:
         ids = [r["entity_id"] for r in rows(
-            "SELECT DISTINCT entity_id FROM kg_evidence WHERE paper_id=? AND "
+            "SELECT DISTINCT entity_id FROM kg_visible_evidence WHERE paper_id=? AND "
             "IFNULL(entity_id,'')!=''", (paper_id,))]
         rel_ids = [r["rid"] for r in rows(
-            "SELECT DISTINCT relation_id rid FROM kg_evidence WHERE paper_id=? AND "
+            "SELECT DISTINCT relation_id rid FROM kg_visible_evidence WHERE paper_id=? AND "
             "IFNULL(relation_id,'')!=''", (paper_id,))]
         if rel_ids:
             marks = ",".join("?" * len(rel_ids))
             for r in rows(f"SELECT source_entity_id sid, target_entity_id tid FROM "
-                          f"kg_relations WHERE id IN ({marks})", rel_ids):
+                          f"kg_visible_relations WHERE id IN ({marks})", rel_ids):
                 ids += [r["sid"], r["tid"]]
         ids = list(dict.fromkeys(x for x in ids if x))
     elif q:
         like = f"%{(q or '').strip()}%"
-        hits = rows("SELECT id FROM kg_entities WHERE canonical_name LIKE ? OR "
+        hits = rows("SELECT id FROM kg_visible_entities WHERE canonical_name LIKE ? OR "
                     "normalized_name LIKE ? ORDER BY LENGTH(canonical_name) LIMIT 40",
                     (like, like))
         ids = [h["id"] for h in hits]
         if ids:
             marks = ",".join("?" * len(ids))
             for r in rows(f"SELECT source_entity_id sid, target_entity_id tid FROM "
-                          f"kg_relations WHERE source_entity_id IN ({marks}) "
+                          f"kg_visible_relations WHERE source_entity_id IN ({marks}) "
                           f"OR target_entity_id IN ({marks})", (*ids, *ids)):
                 ids += [r["sid"], r["tid"]]
         ids = list(dict.fromkeys(ids))[:limit]
     else:
         # 全局视图：按连接度取核心节点（限流渲染），库内论文节点始终保留
         top = rows(
-            "SELECT e.id, (SELECT COUNT(*) FROM kg_relations r WHERE "
+            "SELECT e.id, (SELECT COUNT(*) FROM kg_visible_relations r WHERE "
             "r.source_entity_id=e.id OR r.target_entity_id=e.id) deg "
-            "FROM kg_entities e ORDER BY deg DESC LIMIT ?", (limit,))
+            "FROM kg_visible_entities e ORDER BY deg DESC LIMIT ?", (limit,))
         ids = [r["id"] for r in top]
-        papers = rows("SELECT id FROM kg_entities WHERE id LIKE 'paper_%' LIMIT 100")
+        papers = rows("SELECT id FROM kg_visible_entities WHERE id LIKE 'paper_%' LIMIT 100")
         ids = list(dict.fromkeys(ids + [p["id"] for p in papers]))
 
     if not ids:
@@ -93,8 +95,8 @@ def graph(paper_id: str | None = None, entity_ids: list[str] | None = None,
     marks = ",".join("?" * len(ids))
     nodes = rows(
         f"SELECT e.id, e.entity_type, e.canonical_name, e.name_zh, e.description, e.metadata_json, "
-        f"(SELECT COUNT(*) FROM kg_relations r WHERE r.source_entity_id=e.id OR "
-        f"r.target_entity_id=e.id) deg FROM kg_entities e WHERE e.id IN ({marks})", ids)
+        f"(SELECT COUNT(*) FROM kg_visible_relations r WHERE r.source_entity_id=e.id OR "
+        f"r.target_entity_id=e.id) deg FROM kg_visible_entities e WHERE e.id IN ({marks})", ids)
     rel_filter, rel_args = "", []
     if relation_types:
         rel_filter = " AND r.relation_type IN (" + ",".join("?" * len(relation_types)) + ")"
@@ -102,9 +104,9 @@ def graph(paper_id: str | None = None, entity_ids: list[str] | None = None,
     edges = rows(
         f"SELECT r.id, r.source_entity_id, r.target_entity_id, r.relation_type, "
         f"r.evidence_type, r.confidence, "
-        f"(SELECT COUNT(*) FROM kg_evidence ev WHERE ev.relation_id=r.id) ev_count, "
-        f"(SELECT GROUP_CONCAT(DISTINCT paper_id) FROM kg_evidence ev WHERE "
-        f"ev.relation_id=r.id) papers FROM kg_relations r "
+        f"(SELECT COUNT(*) FROM kg_visible_evidence ev WHERE ev.relation_id=r.id) ev_count, "
+        f"(SELECT GROUP_CONCAT(DISTINCT paper_id) FROM kg_visible_evidence ev WHERE "
+        f"ev.relation_id=r.id) papers FROM kg_visible_relations r "
         f"WHERE r.source_entity_id IN ({marks}) AND r.target_entity_id IN ({marks})"
         f"{rel_filter}", (*ids, *ids, *rel_args))
     node_set = {n["id"] for n in nodes}
@@ -126,7 +128,7 @@ def graph(paper_id: str | None = None, entity_ids: list[str] | None = None,
 
 
 def _total_entities() -> int:
-    return row("SELECT COUNT(*) n FROM kg_entities")["n"]
+    return row("SELECT COUNT(*) n FROM kg_visible_entities")["n"]
 
 
 _EVI_SQL = """
@@ -134,7 +136,7 @@ SELECT ev.*, p.title AS paper_title, p.title_zh AS paper_title_zh,
        CASE WHEN ev.block_id IS NOT NULL AND EXISTS(
          SELECT 1 FROM blocks b WHERE b.id=ev.block_id AND b.paper_id=ev.paper_id
        ) THEN 0 ELSE 1 END AS stale
-FROM kg_evidence ev JOIN papers p ON p.id=ev.paper_id
+FROM kg_visible_evidence ev JOIN papers p ON p.id=ev.paper_id
 WHERE {cond}
 ORDER BY ev.created_at DESC LIMIT ?
 """
@@ -150,7 +152,7 @@ def _evi_out(e: dict) -> dict:
 
 
 def entity_detail(eid: str) -> dict | None:
-    e = row("SELECT * FROM kg_entities WHERE id=?", (eid,))
+    e = row("SELECT * FROM kg_visible_entities WHERE id=?", (eid,))
     if not e:
         return None
     aliases = [a["alias"] for a in rows(
@@ -161,9 +163,9 @@ def entity_detail(eid: str) -> dict | None:
         "s.entity_type AS source_type, "
         "t.canonical_name AS target_name, t.name_zh AS target_name_zh, "
         "t.entity_type AS target_type, "
-        "(SELECT COUNT(*) FROM kg_evidence ev WHERE ev.relation_id=r.id) evidence_count "
-        "FROM kg_relations r JOIN kg_entities s ON s.id=r.source_entity_id "
-        "JOIN kg_entities t ON t.id=r.target_entity_id "
+        "(SELECT COUNT(*) FROM kg_visible_evidence ev WHERE ev.relation_id=r.id) evidence_count "
+        "FROM kg_visible_relations r JOIN kg_visible_entities s ON s.id=r.source_entity_id "
+        "JOIN kg_visible_entities t ON t.id=r.target_entity_id "
         "WHERE r.source_entity_id=? OR r.target_entity_id=? "
         "ORDER BY r.confidence DESC LIMIT 100", (eid, eid))
     import json as _json
@@ -182,8 +184,8 @@ def neighbors(eid: str, limit: int = 60) -> dict:
     rels = rows(
         "SELECT r.*, s.canonical_name AS source_name, s.entity_type AS source_type, "
         "t.canonical_name AS target_name, t.entity_type AS target_type "
-        "FROM kg_relations r JOIN kg_entities s ON s.id=r.source_entity_id "
-        "JOIN kg_entities t ON t.id=r.target_entity_id "
+        "FROM kg_visible_relations r JOIN kg_visible_entities s ON s.id=r.source_entity_id "
+        "JOIN kg_visible_entities t ON t.id=r.target_entity_id "
         "WHERE r.source_entity_id=? OR r.target_entity_id=? LIMIT ?", (eid, eid, limit))
     return {"relations": rels}
 
@@ -194,8 +196,8 @@ def relation_detail(rid: str) -> dict | None:
         "s.entity_type AS source_type, "
         "t.canonical_name AS target_name, t.name_zh AS target_name_zh, "
         "t.entity_type AS target_type "
-        "FROM kg_relations r JOIN kg_entities s ON s.id=r.source_entity_id "
-        "JOIN kg_entities t ON t.id=r.target_entity_id WHERE r.id=?", (rid,))
+        "FROM kg_visible_relations r JOIN kg_visible_entities s ON s.id=r.source_entity_id "
+        "JOIN kg_visible_entities t ON t.id=r.target_entity_id WHERE r.id=?", (rid,))
     if not r:
         return None
     evidence = [_evi_out(x) for x in rows(_EVI_SQL.format(cond="ev.relation_id=?"), (rid, 50))]
@@ -212,18 +214,18 @@ def relation_detail(rid: str) -> dict | None:
 
 def paper_structure(pid: str) -> dict | None:
     """单篇论文知识结构：研究问题 → 方法 → 使用资源 → 发现 → 相关工作，全部带证据定位。"""
-    p = row("SELECT id, title, title_zh, status FROM papers WHERE id=?", (pid,))
+    p = row("SELECT id, title, title_zh, status FROM papers WHERE id=? AND COALESCE(library_role, 'normal')='normal'", (pid,))
     if not p:
         return None
-    job = row("SELECT * FROM kg_extraction_jobs WHERE paper_id=? "
+    job = row("SELECT * FROM kg_visible_jobs WHERE paper_id=? "
               "ORDER BY updated_at DESC LIMIT 1", (pid,))
     rels = rows(
         "SELECT r.id AS rid, r.relation_type, r.evidence_type, r.confidence, "
         "t.id AS entity_id, t.canonical_name AS name, t.name_zh AS name_zh, "
         "t.entity_type AS entity_type, "
         "t.description, ev.block_id, ev.evidence_text, ev.section_name "
-        "FROM kg_relations r JOIN kg_entities t ON t.id=r.target_entity_id "
-        "JOIN kg_evidence ev ON ev.relation_id=r.id "
+        "FROM kg_visible_relations r JOIN kg_visible_entities t ON t.id=r.target_entity_id "
+        "JOIN kg_visible_evidence ev ON ev.relation_id=r.id "
         "WHERE ev.paper_id=? ORDER BY r.relation_type, r.confidence DESC", (pid,))
     buckets = {"problems": {"ADDRESSES", "MITIGATES"}, "proposals": {"PROPOSES"},
                "datasets": {"USES", "EVALUATED_ON"}, "models": set(), "metrics": {"USES_METRIC"},
@@ -259,13 +261,13 @@ def paper_structure(pid: str) -> dict | None:
 
 def topics() -> dict:
     """主题聚类（P3-lite，全部来自库内真实关系）：研究领域 → 论文/关键实体；
-    无研究领域实体时，退化为"被 ≥2 篇论文使用的数据集"分组。"""
+    只把明确抽取出的 ResearchArea 作为主题；共享数据集单独作为实验资源交集展示。"""
     area_rows = rows(
         "SELECT t.id AS area_id, t.canonical_name AS name, ev.paper_id, "
         "r.source_entity_id AS paper_entity_id "
-        "FROM kg_relations r JOIN kg_entities t ON t.id=r.target_entity_id "
-        "JOIN kg_evidence ev ON ev.relation_id=r.id "
-        "WHERE r.relation_type='BELONGS_TO' AND t.entity_type='ResearchArea'")
+        "FROM kg_visible_relations r JOIN kg_visible_entities t ON t.id=r.target_entity_id "
+        "JOIN kg_visible_evidence ev ON ev.relation_id=r.id "
+        "WHERE r.relation_type='BELONGS_TO' AND r.evidence_type!='similarity' AND t.entity_type='ResearchArea'")
     grouped: dict[str, dict] = {}
     for r in area_rows:
         g = grouped.setdefault(r["area_id"], {"name": r["name"], "papers": set(),
@@ -281,8 +283,8 @@ def topics() -> dict:
             marks = ",".join("?" * len(g["paper_entities"]))
             ents = rows(
                 f"SELECT e.id, e.canonical_name, e.entity_type, "
-                f"(SELECT COUNT(*) FROM kg_relations r WHERE r.source_entity_id=e.id "
-                f"OR r.target_entity_id=e.id) deg FROM kg_entities e "
+                f"(SELECT COUNT(*) FROM kg_visible_relations r WHERE r.source_entity_id=e.id "
+                f"OR r.target_entity_id=e.id) deg FROM kg_visible_entities e "
                 f"WHERE e.id IN ({marks}) ORDER BY deg DESC LIMIT 12",
                 tuple(g["paper_entities"]))
             entity_ids = [e["id"] for e in ents]
@@ -291,32 +293,30 @@ def topics() -> dict:
                 key_rels = rows(
                     f"SELECT r.id, r.relation_type, r.evidence_type, "
                     f"s.canonical_name AS source_name, t.canonical_name AS target_name "
-                    f"FROM kg_relations r JOIN kg_entities s ON s.id=r.source_entity_id "
-                    f"JOIN kg_entities t ON t.id=r.target_entity_id "
+                    f"FROM kg_visible_relations r JOIN kg_visible_entities s ON s.id=r.source_entity_id "
+                    f"JOIN kg_visible_entities t ON t.id=r.target_entity_id "
                     f"WHERE r.source_entity_id IN ({m2}) AND r.target_entity_id IN ({m2}) "
                     f"ORDER BY r.confidence DESC LIMIT 15", (*entity_ids, *entity_ids))
         out.append({"name": g["name"], "paper_count": len(papers), "paper_ids": papers,
                     "entity_ids": entity_ids, "key_relations": key_rels})
     out.sort(key=lambda x: -x["paper_count"])
-    if not out:
-        # 退化主题：被 ≥2 篇论文使用的数据集（证据来自 USES 关系）
-        ds = rows(
-            "SELECT t.id, t.canonical_name, COUNT(DISTINCT ev.paper_id) pc, "
-            "GROUP_CONCAT(DISTINCT ev.paper_id) papers "
-            "FROM kg_relations r JOIN kg_entities t ON t.id=r.target_entity_id "
-            "JOIN kg_evidence ev ON ev.relation_id=r.id "
-            "WHERE r.relation_type='USES' AND t.entity_type='Dataset' "
-            "GROUP BY t.id HAVING pc>=2 ORDER BY pc DESC LIMIT 12")
-        for d in ds:
-            out.append({"name": f"共用数据集：{d['canonical_name']}",
-                        "paper_count": d["pc"],
-                        "paper_ids": (d["papers"] or "").split(","),
-                        "entity_ids": [d["id"]], "key_relations": []})
-    return {"topics": out[:20]}
+    # 共享数据集是实验资源交集，不是研究主题；单独呈现，避免误导用户。
+    resources = rows(
+        "SELECT t.id, t.canonical_name, COUNT(DISTINCT ev.paper_id) paper_count, "
+        "GROUP_CONCAT(DISTINCT ev.paper_id) papers "
+        "FROM kg_visible_relations r JOIN kg_visible_entities t ON t.id=r.target_entity_id "
+        "JOIN kg_visible_evidence ev ON ev.relation_id=r.id "
+        "WHERE r.relation_type='USES' AND t.entity_type='Dataset' "
+        "GROUP BY t.id HAVING paper_count>=2 ORDER BY paper_count DESC LIMIT 12")
+    shared_resources = [{
+        "id": d["id"], "name": d["canonical_name"], "paper_count": d["paper_count"],
+        "paper_ids": (d["papers"] or "").split(","),
+    } for d in resources]
+    return {"topics": out[:20], "shared_resources": shared_resources}
 
 
 def jobs_list(limit: int = 50) -> list:
     return rows(
         "SELECT j.*, p.title AS paper_title, p.title_zh AS paper_title_zh "
-        "FROM kg_extraction_jobs j LEFT JOIN papers p ON p.id=j.paper_id "
+        "FROM kg_visible_jobs j LEFT JOIN papers p ON p.id=j.paper_id "
         "ORDER BY j.updated_at DESC LIMIT ?", (max(1, min(int(limit), 200)),))

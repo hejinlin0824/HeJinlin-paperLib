@@ -377,5 +377,75 @@ def test_topics_fallback_to_shared_datasets(kg_db):
         ents, rels, _ = validate_good(pid)
         kg_store.replace_paper_extraction(pid, ents, rels)
     t = kg_queries.topics()
-    assert t["topics"] and "CIFAR-10" in t["topics"][0]["name"]
-    assert t["topics"][0]["paper_count"] == 2
+    assert t["topics"] == []
+    assert t["shared_resources"] and t["shared_resources"][0]["name"] == "CIFAR-10"
+    assert t["shared_resources"][0]["paper_count"] == 2
+
+
+
+def test_test_scope_paper_is_hidden_from_all_graph_queries(kg_db):
+    for pid in ("normal-a", "normal-b", "test-paper"):
+        seed_paper(pid, title=f"Paper {pid}")
+        ents, rels, _ = validate_good(pid)
+        kg_store.replace_paper_extraction(pid, ents, rels)
+    app_db.ex("UPDATE papers SET library_role='test' WHERE id='test-paper'")
+
+    overview = kg_queries.overview()
+    assert overview["papers_total"] == 2
+    assert overview["papers_extracted"] == 2
+    assert overview["entities_total"] == 5
+    assert kg_queries.paper_structure("test-paper") is None
+
+    graph = kg_queries.graph()
+    assert graph["nodes"]
+    assert all("test-paper" not in n["id"] for n in graph["nodes"])
+    assert all("test-paper" not in e["paper_ids"] for e in graph["edges"])
+
+
+def test_excluded_paper_cannot_start_extraction(kg_db):
+    seed_paper("test-paper")
+    app_db.ex("UPDATE papers SET library_role='excluded' WHERE id='test-paper'")
+    with pytest.raises(RuntimeError, match="测试/排除"):
+        kg_extract.create_job("test-paper")
+
+
+def test_library_role_migration_defaults_existing_papers_to_normal(kg_db, tmp_path, monkeypatch):
+    import sqlite3
+    legacy_db = tmp_path / "legacy-library.db"
+    monkeypatch.setattr(app_db, "DB_PATH", legacy_db)
+    with sqlite3.connect(legacy_db) as conn:
+        conn.execute("CREATE TABLE papers(id TEXT PRIMARY KEY, title TEXT, status TEXT)")
+        conn.execute("INSERT INTO papers(id,title,status) VALUES('legacy-paper','Legacy','ready')")
+    app_db.init_db()
+    p = app_db.row("SELECT library_role FROM papers WHERE id='legacy-paper'")
+    assert p["library_role"] == "normal"
+
+
+
+def test_rebuild_missing_ignores_test_and_excluded_papers(kg_db):
+    for pid, role in (("normal-paper", "normal"), ("test-paper", "test"),
+                      ("excluded-paper", "excluded")):
+        seed_paper(pid)
+        app_db.ex("UPDATE papers SET library_role=? WHERE id=?", (role, pid))
+    jobs = kg_extract.rebuild_missing()
+    assert len(jobs) == 1
+    assert app_db.row("SELECT paper_id FROM kg_extraction_jobs WHERE id=?", (jobs[0],))["paper_id"] == "normal-paper"
+
+
+def test_test_only_evidence_cannot_upgrade_shared_relation(kg_db):
+    for pid in ("normal-paper", "test-paper"):
+        seed_paper(pid)
+        ents, rels, _ = validate_good(pid)
+        kg_store.replace_paper_extraction(pid, ents, rels)
+    app_db.ex("UPDATE papers SET library_role='test' WHERE id='test-paper'")
+    rel = app_db.row(
+        "SELECT r.id FROM kg_relations r JOIN kg_evidence e ON e.relation_id=r.id "
+        "WHERE e.paper_id='normal-paper' AND r.relation_type='MITIGATES' LIMIT 1")
+    app_db.ex("UPDATE kg_evidence SET evidence_type='similarity', confidence=0.2 "
+              "WHERE paper_id='normal-paper' AND relation_id=?", (rel["id"],))
+    app_db.ex("UPDATE kg_relations SET evidence_type='explicit', confidence=0.99 WHERE id=?",
+              (rel["id"],))
+    visible = app_db.row("SELECT evidence_type, confidence FROM kg_visible_relations WHERE id=?",
+                         (rel["id"],))
+    assert visible["evidence_type"] == "similarity"
+    assert visible["confidence"] == pytest.approx(0.2)
