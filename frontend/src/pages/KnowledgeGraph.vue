@@ -9,6 +9,7 @@ import * as SigmaPkg from 'sigma'
 import { NodePointProgram } from 'sigma/rendering'
 import Graph from 'graphology'
 import api from '../api'
+import { groupRelationsByEndpoints } from '../utils/graphEdges'
 import { toast } from '../stores'
 
 const Sigma = SigmaPkg.default ?? SigmaPkg.Sigma
@@ -125,7 +126,7 @@ function fitCamera(duration = 250) {
   const w = el.clientWidth || 1200, h = el.clientHeight || 700
   const ratio = Math.max((maxX - minX + 120) / w, (maxY - minY + 120) / h)
   renderer.getCamera().animate(
-    { x: 0, y: 0, ratio: Math.max(0.05, ratio), angle: 0 },
+    { x: (minX + maxX) / 2, y: (minY + maxY) / 2, ratio: Math.max(0.05, ratio), angle: 0 },
     { duration },
   )
 }
@@ -158,21 +159,16 @@ function renderGraph(data) {
   // 同一对端点可能有多种关系（例如论文既“提出”又“对比”某算法）。
   // Sigma 的普通 Graph 不允许平行边，因此按有向端点聚合成一条可视连线，
   // 原始关系 ID 全部保留，点击后在详情面板中逐条选择。
-  const edgeGroups = new Map()
-  for (const e of shownEdges) {
-    const pairKey = JSON.stringify([e.source, e.target])
-    if (!edgeGroups.has(pairKey)) edgeGroups.set(pairKey, [])
-    edgeGroups.get(pairKey).push(e)
-  }
-  for (const [pairKey, relations] of edgeGroups) {
-    const first = relations[0]
+  const edgeGroups = groupRelationsByEndpoints(shownEdges)
+  for (const group of edgeGroups) {
+    const relations = group.relations
     const kinds = new Set(relations.map(e => e.evidence_type))
     const color = kinds.has('inferred') ? '#c47a43'
       : kinds.has('similarity') ? '#8064a9' : '#6887a8'
     const labels = [...new Set(relations.map(e =>
       (REL_ZH[e.relation_type] || e.relation_type) + ' · ' +
       (EVI_LABEL[e.evidence_type] || e.evidence_type)))]
-    graph.addEdgeWithKey('pair:' + pairKey, first.source, first.target, {
+    graph.addEdgeWithKey('pair:' + group.key, group.source, group.target, {
       size: Math.min(3, 1.15 + Math.log2(relations.length)),
       color,
       _label: labels.join(' / '),
@@ -397,12 +393,9 @@ function ensureRenderer() {
     },
     nodeReducer(node, data) {
       const res = { ...data }
-      if (hoveredNode) {
-        if (node !== hoveredNode && !hoveredNeighbors.has(node)) {
-          // 变暗：8 位 hex 直接带 alpha，星光着色器按 alpha 衰减
-          res.color = data._color + (data._paper ? '2e' : '2e')
-          res.label = res._paper ? res.label : null
-        }
+      if (hoveredNode && node !== hoveredNode && !hoveredNeighbors.has(node)) {
+        res.color = '#dce3ea'
+        res.label = null
       }
       return res
     },
@@ -582,7 +575,7 @@ onBeforeUnmount(() => {
           <span class="lg-item"><i class="lg-line inf"></i>橙线 = AI 推断</span>
           <span class="lg-item"><i class="lg-line sim"></i>紫线 = 语义相似（不代表技术继承）</span>
         </div>
-        <div class="kg-tip">悬停节点查看直接关系 · 滚轮缩放 · 拖动平移 · 位置只表示连接结构</div>
+        <div class="kg-tip">按知识类别分列 · 悬停查看关系 · 点击查看原文证据 · 滚轮缩放</div>
       </div>
 
       <aside class="kg-panel">
@@ -699,7 +692,7 @@ onBeforeUnmount(() => {
         <div v-else class="kg-panel-hint">
           <p><b>这张图怎么读</b></p>
           <ul>
-            <li>每颗 <b style="color:#7db4ff">带白色光核的大星</b> 是一篇论文，环绕它的是论文里的方法、数据集、研究问题</li>
+            <li>节点按类别分列：论文、研究问题、算法、模型与概念、实验资源、研究发现等</li>
             <li><b>悬停</b>任意星体：只点亮与它直接相关的连线，线上标出中文关系名和置信度</li>
             <li><b>点击</b>星体或连线 → 右栏看详情和<b>论文原句证据</b>，可一键跳回原文位置</li>
             <li><b>橙线</b> = AI 推断（论文没直说），<b>蓝线</b> = 论文原话，绝不混淆</li>
