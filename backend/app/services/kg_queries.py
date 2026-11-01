@@ -80,13 +80,19 @@ def graph(paper_id: str | None = None, entity_ids: list[str] | None = None,
             ids = [focus_entity_id]
             if evidence_types:
                 marks_e = ",".join("?" * len(evidence_types))
+                focus_filter = f"AND evidence_type IN ({marks_e}) "
+                focus_args = [focus_entity_id, focus_entity_id, *evidence_types]
+                if relation_types:
+                    marks_r = ",".join("?" * len(relation_types))
+                    focus_filter += f"AND relation_type IN ({marks_r}) "
+                    focus_args.extend(relation_types)
+                if not include_rejected:
+                    focus_filter += "AND review_status!='rejected' "
                 focus_edges = rows(
                     "SELECT source_entity_id, target_entity_id FROM kg_visible_relations "
                     "WHERE (source_entity_id=? OR target_entity_id=?) "
-                    f"AND evidence_type IN ({marks_e}) "
-                    + ("" if include_rejected else "AND review_status!='rejected' ")
-                    + "ORDER BY confidence DESC LIMIT 30",
-                    (focus_entity_id, focus_entity_id, *evidence_types))
+                    + focus_filter + "ORDER BY confidence DESC LIMIT 30",
+                    tuple(focus_args))
                 for edge in focus_edges:
                     ids.extend([edge["source_entity_id"], edge["target_entity_id"]])
             ids = list(dict.fromkeys(ids))
