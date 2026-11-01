@@ -65,7 +65,9 @@ if not errorlevel 1 goto :err_port
 
 echo [5/5] Starting PaperLib server...
 echo This window shows server logs. Press Ctrl+C to stop.
-start "" cmd /c "timeout /t 4 /nobreak >nul & start "" http://127.0.0.1:8300"
+if /I not "%PAPERLIB_NO_BROWSER%"=="1" (
+  start "" cmd /c "timeout /t 4 /nobreak >nul & start "" http://127.0.0.1:8300"
+)
 ".venv\Scripts\python.exe" -m uvicorn app.main:app --host 127.0.0.1 --port 8300 --app-dir backend
 goto :eof
 
