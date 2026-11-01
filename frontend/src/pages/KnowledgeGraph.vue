@@ -356,7 +356,7 @@ function ensureRenderer() {
     enableEdgeEvents: true,
     minCameraRatio: 0.06,
     maxCameraRatio: 10,
-    labelRenderedSizeThreshold: 15,
+    labelRenderedSizeThreshold: 7,
     nodeLabelSize: 12,
     nodeLabelColor: '#263548',
     labelWeight: '600',
@@ -696,7 +696,8 @@ onBeforeUnmount(() => {
             <li><b>悬停</b>任意星体：只点亮与它直接相关的连线，线上标出中文关系名和置信度</li>
             <li><b>点击</b>星体或连线 → 右栏看详情和<b>论文原句证据</b>，可一键跳回原文位置</li>
             <li><b>橙线</b> = AI 推断（论文没直说），<b>蓝线</b> = 论文原话，绝不混淆</li>
-            <li>滚轮缩放、拖动平移，用左侧搜索可以飞到某个知识点</li>
+            <li>同一对节点存在多种关系时，画面合并连线但保留全部关系；点击连线可逐条查看证据</li>
+            <li>滚轮缩放、拖动平移，用左侧搜索可以定位某个知识点</li>
           </ul>
           <p class="muted" style="font-size:12px;margin-top:10px">
             图谱完全由论文原文抽取，没有证据的内容不会出现在这里。</p>
