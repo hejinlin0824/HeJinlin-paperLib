@@ -119,7 +119,14 @@ def graph(paper_id: str | None = None, entity_ids: list[str] | None = None,
         f"r.evidence_type, r.confidence, "
         f"(SELECT COUNT(*) FROM kg_visible_evidence ev WHERE ev.relation_id=r.id) ev_count, "
         f"(SELECT GROUP_CONCAT(DISTINCT paper_id) FROM kg_visible_evidence ev WHERE "
-        f"ev.relation_id=r.id) papers FROM kg_visible_relations r "
+        f"ev.relation_id=r.id) papers, "
+        f"(SELECT ev.evidence_text FROM kg_visible_evidence ev WHERE ev.relation_id=r.id "
+        f"AND ev.evidence_type=r.evidence_type ORDER BY ev.confidence DESC, ev.created_at DESC LIMIT 1) evidence_text, "
+        f"(SELECT ev.section_name FROM kg_visible_evidence ev WHERE ev.relation_id=r.id "
+        f"AND ev.evidence_type=r.evidence_type ORDER BY ev.confidence DESC, ev.created_at DESC LIMIT 1) section_name, "
+        f"(SELECT ev.paper_id FROM kg_visible_evidence ev WHERE ev.relation_id=r.id "
+        f"AND ev.evidence_type=r.evidence_type ORDER BY ev.confidence DESC, ev.created_at DESC LIMIT 1) evidence_paper_id "
+        f"FROM kg_visible_relations r "
         f"WHERE r.source_entity_id IN ({marks}) AND r.target_entity_id IN ({marks})"
         f"{rel_filter}", (*ids, *ids, *rel_args))
     node_set = {n["id"] for n in nodes}
@@ -136,6 +143,9 @@ def graph(paper_id: str | None = None, entity_ids: list[str] | None = None,
         "relation_type": e["relation_type"], "evidence_type": e["evidence_type"],
         "confidence": e["confidence"], "evidence_count": e["ev_count"],
         "paper_ids": (e["papers"] or "").split(",") if e["papers"] else [],
+        "evidence_text": e["evidence_text"] or "",
+        "section_name": e["section_name"] or "",
+        "evidence_paper_id": e["evidence_paper_id"] or "",
     } for e in edges]
     return {"nodes": out_nodes, "edges": out_edges, "total_entities": _total_entities()}
 
