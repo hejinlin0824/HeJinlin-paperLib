@@ -32,6 +32,7 @@ const nodeCount = ref(0)
 const edgeCount = ref(0)
 // Evidence list is the default because users need to understand claims before exploring topology.
 const explorerMode = ref('evidence')
+const showRejected = ref(false)
 
 const REL_ZH = {
   PROPOSES: '提出', ADDRESSES: '针对问题', USES: '使用', USES_METRIC: '评测指标',
@@ -215,6 +216,7 @@ async function loadGraph() {
     if (ts.length) params.types = ts.join(',')
     if (selRelation.value) params.relation_types = selRelation.value
     params.evidence_types = [...activeEvidenceTypes.value].join(',')
+    params.include_rejected = showRejected.value ? 'true' : 'false'
 
     const data = await api.kgGraph(params)
     // Never let a slower, stale response replace the latest graph with old/empty data.
@@ -241,6 +243,16 @@ async function setExplorerMode(mode) {
   if (mode === 'graph' && graphData.value) {
     await nextTick()
     renderGraph(graphData.value)
+  }
+}
+
+async function reviewRelation(edge, status) {
+  try {
+    await api.kgReviewRelation(edge.id, status)
+    toast(status === 'verified' ? '已确认这条关系' : status === 'rejected' ? '已驳回这条关系（证据保留）' : '已恢复为待核验', 'ok')
+    await loadGraph()
+  } catch (e) {
+    toast('关系审核失败：' + e.message, 'err')
   }
 }
 
@@ -567,6 +579,9 @@ onBeforeUnmount(() => {
       <button class="btn sm" :class="{ primary: explorerMode === 'evidence' }" @click="setExplorerMode('evidence')">证据清单</button>
       <button class="btn sm" :class="{ primary: explorerMode === 'graph' }" @click="setExplorerMode('graph')">关系图</button>
       <span class="kg-modehint">先读关系与原文依据，再按需查看网络结构</span>
+      <button class="btn sm" :class="{ primary: showRejected }" @click="showRejected = !showRejected; loadGraph()">
+        {{ showRejected ? '隐藏已驳回' : '显示已驳回' }}
+      </button>
     </div>
 
     <div v-if="view === 'global'" class="kg-toolbar">
@@ -654,11 +669,17 @@ onBeforeUnmount(() => {
         <div v-if="!relationRows.length" class="kg-evidence-empty">
           当前筛选条件下没有可展示的原文明示关系。可以切换论文、调整类型，或在证据筛选中单独开启 AI 推断。
         </div>
-        <button v-for="edge in relationRows" :key="edge.id" class="kg-evidence-row" @click="openRelation(edge.id)">
+        <article v-for="edge in relationRows" :key="edge.id" class="kg-evidence-row" @click="openRelation(edge.id)">
           <div class="kg-evidence-triple"><b>{{ edge.sourceLabel }}</b><span>{{ edge.relationLabel }} →</span><b>{{ edge.targetLabel }}</b></div>
           <p class="kg-evidence-quote">“{{ edge.evidence_text || '该关系暂无可显示的原文摘录，请打开详情核验。' }}”</p>
-          <div class="kg-evidence-meta"><span>{{ edge.evidencePaperTitle }}</span><span v-if="edge.section_name">{{ edge.section_name }}</span><span>{{ edge.evidence_count }} 条证据</span><span class="kg-open-detail">查看证据 ›</span></div>
-        </button>
+          <div class="kg-evidence-meta"><span>{{ edge.evidencePaperTitle }}</span><span v-if="edge.section_name">{{ edge.section_name }}</span><span>{{ edge.evidence_count }} 条证据</span><span class="kg-review-status" :class="edge.review_status">{{ edge.review_status === 'verified' ? '人工已确认' : edge.review_status === 'rejected' ? '已驳回' : '待核验' }}</span><span class="kg-open-detail">查看证据 ›</span></div>
+          <div class="kg-review-actions">
+            <button v-if="edge.review_status !== 'verified'" class="btn sm" @click.stop="reviewRelation(edge, 'verified')">确认关系</button>
+            <button v-else class="btn sm" @click.stop="reviewRelation(edge, 'unreviewed')">取消确认</button>
+            <button v-if="edge.review_status !== 'rejected'" class="btn sm danger" @click.stop="reviewRelation(edge, 'rejected')">判为错误</button>
+            <button v-else class="btn sm" @click.stop="reviewRelation(edge, 'unreviewed')">恢复待核验</button>
+          </div>
+        </article>
       </section>
 
       <div v-show="explorerMode === 'graph'" class="kg-canvas-wrap">
@@ -736,6 +757,7 @@ onBeforeUnmount(() => {
             <div class="muted" style="font-size:12px">
               <span :class="{ 'ev-warn': panel.d.evidence_type !== 'explicit' }">
                 {{ EVI_LABEL[panel.d.evidence_type] || panel.d.evidence_type }}</span>
+              · {{ panel.d.review_status === 'verified' ? '人工已确认' : panel.d.review_status === 'rejected' ? '已驳回' : '待核验' }}
               <template v-if="panel.d.evidence_type === 'inferred'">（AI 根据论文上下文推断，需结合原文判断）</template>
               <template v-else-if="panel.d.evidence_type === 'similarity'">（语义相似，不代表技术继承或因果关系）</template>
             </div>
@@ -839,8 +861,13 @@ onBeforeUnmount(() => {
 .kg-evidence-head h3{margin:0 0 4px;font-size:15px;color:#24364b}
 .kg-evidence-head p{margin:0;color:#718096;font-size:12px;line-height:1.6}
 .kg-evidence-head strong{white-space:nowrap;color:#315f8b}
-.kg-evidence-row{display:block;width:100%;text-align:left;border:0;border-bottom:1px solid #edf1f5;background:#fff;padding:13px 8px;cursor:pointer;color:#334155}
+.kg-evidence-row{display:block;width:100%;text-align:left;border:0;border-bottom:1px solid #edf1f5;background:#fff;padding:13px 8px;color:#334155}
 .kg-evidence-row:hover{background:#f7f9fc}
+.kg-review-status{border-radius:10px;padding:2px 7px;background:#fff4df;color:#9a641f}
+.kg-review-status.verified{background:#e7f5ec;color:#267448}
+.kg-review-status.rejected{background:#fce9e8;color:#a33d36}
+.kg-review-actions{display:flex;gap:6px;margin-top:8px}
+.kg-review-actions .danger{color:#a33d36;border-color:#e9c2bf}
 .kg-evidence-triple{display:flex;align-items:center;flex-wrap:wrap;gap:7px;font-size:13px}
 .kg-evidence-triple b{color:#203c59}
 .kg-evidence-triple span{color:#47769b;font-size:12px;font-weight:700}
