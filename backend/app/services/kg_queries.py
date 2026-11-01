@@ -193,7 +193,7 @@ def entity_detail(eid: str) -> dict | None:
         "(SELECT COUNT(*) FROM kg_visible_evidence ev WHERE ev.relation_id=r.id) evidence_count "
         "FROM kg_visible_relations r JOIN kg_visible_entities s ON s.id=r.source_entity_id "
         "JOIN kg_visible_entities t ON t.id=r.target_entity_id "
-        "WHERE r.source_entity_id=? OR r.target_entity_id=? "
+        "WHERE (r.source_entity_id=? OR r.target_entity_id=?) AND r.review_status!='rejected' "
         "ORDER BY r.confidence DESC LIMIT 100", (eid, eid))
     import json as _json
     meta = _json.loads(e["metadata_json"] or "{}") or {}
@@ -213,7 +213,7 @@ def neighbors(eid: str, limit: int = 60) -> dict:
         "t.canonical_name AS target_name, t.entity_type AS target_type "
         "FROM kg_visible_relations r JOIN kg_visible_entities s ON s.id=r.source_entity_id "
         "JOIN kg_visible_entities t ON t.id=r.target_entity_id "
-        "WHERE r.source_entity_id=? OR r.target_entity_id=? LIMIT ?", (eid, eid, limit))
+        "WHERE (r.source_entity_id=? OR r.target_entity_id=?) AND r.review_status!='rejected' LIMIT ?", (eid, eid, limit))
     return {"relations": rels}
 
 
@@ -254,7 +254,8 @@ def paper_structure(pid: str) -> dict | None:
         "t.description, ev.block_id, ev.evidence_text, ev.section_name "
         "FROM kg_visible_relations r JOIN kg_visible_entities t ON t.id=r.target_entity_id "
         "JOIN kg_visible_evidence ev ON ev.relation_id=r.id "
-        "WHERE ev.paper_id=? ORDER BY r.relation_type, r.confidence DESC", (pid,))
+        "WHERE ev.paper_id=? AND r.evidence_type='explicit' AND r.review_status!='rejected' "
+        "ORDER BY r.relation_type, r.confidence DESC", (pid,))
     buckets = {"problems": {"ADDRESSES", "MITIGATES"}, "proposals": {"PROPOSES"},
                "datasets": {"USES", "EVALUATED_ON"}, "models": set(), "metrics": {"USES_METRIC"},
                "findings": {"REPORTS"}, "related": {"COMPARES", "EXTENDS"},
@@ -295,7 +296,7 @@ def topics() -> dict:
         "r.source_entity_id AS paper_entity_id "
         "FROM kg_visible_relations r JOIN kg_visible_entities t ON t.id=r.target_entity_id "
         "JOIN kg_visible_evidence ev ON ev.relation_id=r.id "
-        "WHERE r.relation_type='BELONGS_TO' AND r.evidence_type!='similarity' AND r.review_status!='rejected' AND t.entity_type='ResearchArea'")
+        "WHERE r.relation_type='BELONGS_TO' AND r.evidence_type='explicit' AND r.review_status!='rejected' AND t.entity_type='ResearchArea'")
     grouped: dict[str, dict] = {}
     for r in area_rows:
         g = grouped.setdefault(r["area_id"], {"name": r["name"], "papers": set(),
@@ -324,6 +325,7 @@ def topics() -> dict:
                     f"FROM kg_visible_relations r JOIN kg_visible_entities s ON s.id=r.source_entity_id "
                     f"JOIN kg_visible_entities t ON t.id=r.target_entity_id "
                     f"WHERE r.source_entity_id IN ({m2}) AND r.target_entity_id IN ({m2}) "
+                    f"AND r.evidence_type='explicit' AND r.review_status!='rejected' "
                     f"ORDER BY r.confidence DESC LIMIT 15", (*entity_ids, *entity_ids))
         out.append({"name": g["name"], "paper_count": len(papers), "paper_ids": papers,
                     "entity_ids": entity_ids, "key_relations": key_rels})
@@ -334,7 +336,8 @@ def topics() -> dict:
         "GROUP_CONCAT(DISTINCT ev.paper_id) papers "
         "FROM kg_visible_relations r JOIN kg_visible_entities t ON t.id=r.target_entity_id "
         "JOIN kg_visible_evidence ev ON ev.relation_id=r.id "
-        "WHERE r.relation_type='USES' AND t.entity_type='Dataset' "
+        "WHERE r.relation_type='USES' AND r.evidence_type='explicit' "
+        "AND r.review_status!='rejected' AND t.entity_type='Dataset' "
         "GROUP BY t.id HAVING paper_count>=2 ORDER BY paper_count DESC LIMIT 12")
     shared_resources = [{
         "id": d["id"], "name": d["canonical_name"], "paper_count": d["paper_count"],
