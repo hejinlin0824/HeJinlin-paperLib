@@ -72,33 +72,34 @@ jobs:
       - name: Install frontend dependencies
         working-directory: frontend
         run: npm ci
-      - name: Smoke test the real production launcher
+      - name: Smoke test the Windows production launcher and server
         shell: pwsh
         run: |
           $env:PAPERLIB_NO_BROWSER = "1"
-          $stdout = Join-Path $env:RUNNER_TEMP "paperlib-launcher.stdout.log"
-          $stderr = Join-Path $env:RUNNER_TEMP "paperlib-launcher.stderr.log"
-          $launcher = Start-Process -FilePath $env:ComSpec -ArgumentList '/c "启动.bat"' -PassThru -WindowStyle Hidden -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          $env:PAPERLIB_BUILD_ONLY = "1"
+          & $env:ComSpec /c "启动.bat"
+          if ($LASTEXITCODE -ne 0) { throw "启动.bat preflight/build failed with exit code $LASTEXITCODE." }
+
+          Remove-Item Env:PAPERLIB_BUILD_ONLY
+          $server = Start-Process -FilePath ".venv\Scripts\python.exe" -ArgumentList @("-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8300", "--app-dir", "backend") -PassThru -WindowStyle Hidden
           $ready = $false
           try {
-            for ($i = 0; $i -lt 120; $i++) {
+            for ($i = 0; $i -lt 40; $i++) {
               Start-Sleep -Seconds 1
               try {
-                $response = Invoke-WebRequest -Uri "http://127.0.0.1:8300/api/papers" -TimeoutSec 1
+                $response = Invoke-WebRequest -Uri "http://127.0.0.1:8300/api/papers" -TimeoutSec 2
                 if ($response.StatusCode -eq 200) { $ready = $true; break }
               } catch { }
-              if ($launcher.HasExited) { break }
+              if ($server.HasExited) { break }
             }
-            if (-not $ready) {
-              Write-Host "Launcher stdout:"
-              if (Test-Path $stdout) { Get-Content $stdout }
-              Write-Host "Launcher stderr:"
-              if (Test-Path $stderr) { Get-Content $stderr }
-              throw "启动.bat did not serve /api/papers within approximately 240 seconds."
-            }
+            if (-not $ready) { throw "Backend did not serve /api/papers within 120 seconds." }
             $page = Invoke-WebRequest -Uri "http://127.0.0.1:8300/" -TimeoutSec 5
             if ($page.StatusCode -ne 200) { throw "Production frontend returned HTTP $($page.StatusCode)." }
           } finally {
+            if (-not $server.HasExited) {
+              Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
+            }
+          }
             $listeners = Get-NetTCPConnection -LocalPort 8300 -State Listen -ErrorAction SilentlyContinue
             foreach ($listener in $listeners) {
               Stop-Process -Id $listener.OwningProcess -Force -ErrorAction SilentlyContinue
