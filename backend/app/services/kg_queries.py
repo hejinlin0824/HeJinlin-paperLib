@@ -36,6 +36,7 @@ def overview() -> dict:
 def graph(paper_id: str | None = None, entity_ids: list[str] | None = None,
           types: list[str] | None = None, relation_types: list[str] | None = None,
           evidence_types: list[str] | None = None,
+          include_rejected: bool = False,
           q: str | None = None, limit: int = 250) -> dict:
     """Query a graph. By default only source-explicit relations are shown.
 
@@ -114,9 +115,11 @@ def graph(paper_id: str | None = None, entity_ids: list[str] | None = None,
     else:
         rel_filter += " AND r.evidence_type IN (" + ",".join("?" * len(evidence_types)) + ")"
         rel_args.extend(evidence_types)
+    if not include_rejected:
+        rel_filter += " AND r.review_status!='rejected'"
     edges = rows(
         f"SELECT r.id, r.source_entity_id, r.target_entity_id, r.relation_type, "
-        f"r.evidence_type, r.confidence, "
+        f"r.evidence_type, r.confidence, r.review_status, "
         f"(SELECT COUNT(*) FROM kg_visible_evidence ev WHERE ev.relation_id=r.id) ev_count, "
         f"(SELECT GROUP_CONCAT(DISTINCT paper_id) FROM kg_visible_evidence ev WHERE "
         f"ev.relation_id=r.id) papers, "
@@ -142,6 +145,7 @@ def graph(paper_id: str | None = None, entity_ids: list[str] | None = None,
         "id": e["id"], "source": e["source_entity_id"], "target": e["target_entity_id"],
         "relation_type": e["relation_type"], "evidence_type": e["evidence_type"],
         "confidence": e["confidence"], "evidence_count": e["ev_count"],
+        "review_status": e["review_status"],
         "paper_ids": (e["papers"] or "").split(",") if e["papers"] else [],
         "evidence_text": e["evidence_text"] or "",
         "section_name": e["section_name"] or "",
@@ -227,6 +231,7 @@ def relation_detail(rid: str) -> dict | None:
     return {
         "id": r["id"], "relation_type": r["relation_type"],
         "evidence_type": r["evidence_type"], "confidence": r["confidence"],
+        "review_status": r["review_status"],
         "source": {"id": r["source_entity_id"], "name": r["source_name"],
                    "name_zh": r["source_name_zh"] or "", "type": r["source_type"]},
         "target": {"id": r["target_entity_id"], "name": r["target_name"],
@@ -290,7 +295,7 @@ def topics() -> dict:
         "r.source_entity_id AS paper_entity_id "
         "FROM kg_visible_relations r JOIN kg_visible_entities t ON t.id=r.target_entity_id "
         "JOIN kg_visible_evidence ev ON ev.relation_id=r.id "
-        "WHERE r.relation_type='BELONGS_TO' AND r.evidence_type!='similarity' AND t.entity_type='ResearchArea'")
+        "WHERE r.relation_type='BELONGS_TO' AND r.evidence_type!='similarity' AND r.review_status!='rejected' AND t.entity_type='ResearchArea'")
     grouped: dict[str, dict] = {}
     for r in area_rows:
         g = grouped.setdefault(r["area_id"], {"name": r["name"], "papers": set(),
