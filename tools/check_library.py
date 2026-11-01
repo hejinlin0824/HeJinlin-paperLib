@@ -87,7 +87,7 @@ def main() -> int:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(errors="backslashreplace")
-    report = inspect_library()
+    report = inspect_library(ROOT)
     print(json.dumps(report, ensure_ascii=False, indent=2))
     if not report["safe_to_start"]:
         print("\n[SAFE GUARD] 未修改任何文件，服务不会启动。请先备份整个 data 目录并核对数据库。")
