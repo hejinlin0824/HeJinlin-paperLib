@@ -76,8 +76,8 @@ const relationRows = computed(() => {
       evidencePaperTitle: papers.value.find(p => p.id === edge.evidence_paper_id)?.title_zh
         || papers.value.find(p => p.id === edge.evidence_paper_id)?.title || '来源论文',
     }
-  }).sort((a, b) => (Number(b.confidence) || 0) - (Number(a.confidence) || 0)
-    || (Number(b.evidence_count) || 0) - (Number(a.evidence_count) || 0))
+  }).sort((a, b) => (Number(b.evidence_count) || 0) - (Number(a.evidence_count) || 0)
+    || a.sourceLabel.localeCompare(b.sourceLabel, 'zh-CN'))
 })
 
 const presentTypes = computed(() => {
@@ -657,7 +657,7 @@ onBeforeUnmount(() => {
         <button v-for="edge in relationRows" :key="edge.id" class="kg-evidence-row" @click="openRelation(edge.id)">
           <div class="kg-evidence-triple"><b>{{ edge.sourceLabel }}</b><span>{{ edge.relationLabel }} →</span><b>{{ edge.targetLabel }}</b></div>
           <p class="kg-evidence-quote">“{{ edge.evidence_text || '该关系暂无可显示的原文摘录，请打开详情核验。' }}”</p>
-          <div class="kg-evidence-meta"><span>{{ edge.evidencePaperTitle }}</span><span v-if="edge.section_name">{{ edge.section_name }}</span><span>{{ edge.evidence_count }} 条证据</span><span>置信度 {{ Math.round((edge.confidence || 0) * 100) }}%</span><span class="kg-open-detail">查看证据 ›</span></div>
+          <div class="kg-evidence-meta"><span>{{ edge.evidencePaperTitle }}</span><span v-if="edge.section_name">{{ edge.section_name }}</span><span>{{ edge.evidence_count }} 条证据</span><span class="kg-open-detail">查看证据 ›</span></div>
         </button>
       </section>
 
