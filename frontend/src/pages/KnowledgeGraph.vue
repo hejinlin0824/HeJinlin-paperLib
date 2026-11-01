@@ -452,6 +452,8 @@ function readerUrl(pid, blockId) {
 
 function onSearch() {
   focusNode = ''
+  focusEntityId.value = ''
+  focusEntityLabel.value = ''
   selPaper.value = ''
   loadGraph()
 }
