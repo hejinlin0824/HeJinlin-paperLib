@@ -184,6 +184,11 @@ async def run_job(job_id: str):
     stats["warnings"] = warnings[:20]
     stats["model"] = f"{info['provider']}/{info['model']}"
     _mark(job_id, status="completed", stage="", progress=1.0, stats_json=dumps(stats))
+    # 新实体补中文名（尽力而为，失败不影响抽取结果）
+    try:
+        await translate_missing_names()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 async def run_jobs_sequential(job_ids: list[str]):
@@ -210,3 +215,49 @@ async def auto_extract(pid: str):
         return
     job = _new_job(pid, model=f"{info['provider']}/{info['model']}")
     await run_job(job["id"])
+
+
+# ---------- 实体中文名翻译（图谱展示用：一次性批量、结果缓存进库不重复花钱） ----------
+
+NAME_ZH_SYSTEM = """你是学术术语翻译助手。把给定的科研实体名翻译成简洁通用的中文术语。
+规则：算法/模型/系统的专名保留通行写法（如 FedProx、BERT、OpenHands 可不翻）；
+数据集名保留原名（如 CIFAR-10）；研究领域、技术概念、方法类名词翻成中文学界通用叫法；
+人名保留原文；论文标题翻成中文标题。只输出 JSON：{"原文名": "中文名", ...}，不要解释。"""
+
+
+async def translate_missing_names(limit: int = 300) -> int:
+    """为还没有中文名的实体批量翻译（每批 60 个）。返回更新数量。"""
+    ents = rows("SELECT id, canonical_name FROM kg_entities "
+                "WHERE IFNULL(name_zh,'')='' LIMIT ?", (int(limit),))
+    if not ents:
+        return 0
+    info = engine_info()
+    ok, _ = engine_ready(info)
+    if not ok or info["provider"] == "mock":
+        return 0
+    updated = 0
+    for i in range(0, len(ents), 60):
+        batch = ents[i:i + 60]
+        names = [e["canonical_name"] for e in batch]
+        msgs = [{"role": "system", "content": NAME_ZH_SYSTEM},
+                {"role": "user", "content": "\n".join(names)}]
+        try:
+            raw = await chat(info, msgs, max_tokens=2000)
+        except Exception:  # noqa: BLE001
+            continue
+        import json as _json
+        import re as _re
+        m = _re.search(r"\{[\s\S]*\}", raw)
+        if not m:
+            continue
+        try:
+            mapping = _json.loads(m.group(0))
+        except _json.JSONDecodeError:
+            continue
+        for e in batch:
+            zh = str(mapping.get(e["canonical_name"]) or "").strip()
+            if zh:
+                ex("UPDATE kg_entities SET name_zh=?, updated_at=? WHERE id=?",
+                   (zh[:120], now(), e["id"]))
+                updated += 1
+    return updated

@@ -1,6 +1,6 @@
 <script setup>
-// 知识图谱：全局网络 / 主题视图 / 实体·关系详情与原文证据定位。
-// 只做浏览与探索：抽取在后台任务里跑，页面轮询任务状态并自动刷新。
+// 知识图谱 · 银河视图：深空星野里每篇论文是一颗"恒星"，它的方法/数据集/问题像行星一样
+// 环绕成簇；连线是星座般的微光，悬停即点亮邻居关系。标签优先中文（抽取后自动批量翻译缓存）。
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import cytoscape from 'cytoscape'
 import api from '../api'
@@ -11,76 +11,130 @@ const papers = ref([])
 const view = ref('global')            // global | topics
 const selPaper = ref('')              // 单篇聚焦
 const q = ref('')
-const activeTypes = ref(new Set())    // 实体类型过滤
-const selRelation = ref('')           // 关系类型过滤
+const activeTypes = ref(new Set())
+const selRelation = ref('')
+const showDust = ref(false)           // 是否显示无连线的"星尘"实体
 const graphData = ref(null)
 const loading = ref(false)
-const panel = ref({ kind: 'empty' })  // empty | entity | relation | topic
+const panel = ref({ kind: 'empty' })
 const topics = ref([])
 const activeTopic = ref(null)
-const job = ref(null)                 // 进行中的抽取任务（用于进度条）
+const job = ref(null)
 const jobsTimer = ref(null)
+const nodeCount = ref(0)
+const edgeCount = ref(0)
 
-const REL_TYPES = ['PROPOSES', 'ADDRESSES', 'USES', 'USES_METRIC', 'BELONGS_TO',
-  'AUTHORED_BY', 'PUBLISHED_IN', 'REPORTS', 'MITIGATES', 'IMPROVES',
-  'EVALUATED_ON', 'USED_FOR', 'COMPARES', 'EXTENDS']
+const REL_ZH = {
+  PROPOSES: '提出', ADDRESSES: '针对问题', USES: '使用', USES_METRIC: '评测指标',
+  BELONGS_TO: '属于', AUTHORED_BY: '作者', PUBLISHED_IN: '发表于', REPORTS: '报告发现',
+  MITIGATES: '缓解', IMPROVES: '改进', EVALUATED_ON: '验证于', USED_FOR: '用于任务',
+  COMPARES: '对比', EXTENDS: '扩展',
+}
+const REL_OPTIONS = Object.keys(REL_ZH)
 
 const TYPE_STYLE = {
-  Paper: { color: '#2f5e8e', shape: 'round-rectangle', zh: '论文' },
-  Algorithm: { color: '#3d7d4f', shape: 'ellipse', zh: '算法' },
-  ResearchProblem: { color: '#b3423a', shape: 'diamond', zh: '研究问题' },
-  Dataset: { color: '#a06014', shape: 'square', zh: '数据集' },
-  Model: { color: '#5a4f9e', shape: 'round-rectangle', zh: '模型' },
-  Metric: { color: '#7a6a3a', shape: 'ellipse', zh: '指标' },
-  Concept: { color: '#3a7d8c', shape: 'diamond', zh: '概念' },
-  Finding: { color: '#8c3a6e', shape: 'star', zh: '发现' },
-  ResearchArea: { color: '#286e60', shape: 'hexagon', zh: '领域' },
-  Author: { color: '#6b7280', shape: 'ellipse', zh: '作者' },
-  Venue: { color: '#8b6f47', shape: 'tag', zh: '期刊会议' },
-  Task: { color: '#4a6fa5', shape: 'ellipse', zh: '任务' },
-  Institution: { color: '#8b93a0', shape: 'ellipse', zh: '机构' },
+  Paper: { color: '#6aa9ff', zh: '论文' },
+  Algorithm: { color: '#57d98a', zh: '算法' },
+  ResearchProblem: { color: '#ff7a6e', zh: '研究问题' },
+  Dataset: { color: '#ffb454', zh: '数据集' },
+  Model: { color: '#a78bfa', zh: '模型' },
+  Metric: { color: '#ffd166', zh: '指标' },
+  Concept: { color: '#5fd4d0', zh: '概念' },
+  Finding: { color: '#f472b6', zh: '发现' },
+  ResearchArea: { color: '#34d399', zh: '领域' },
+  Author: { color: '#9aa7b8', zh: '作者人名' },
+  Venue: { color: '#c9a26b', zh: '期刊会议' },
+  Task: { color: '#7aa5f8', zh: '任务' },
+  Institution: { color: '#8b93a0', zh: '机构' },
 }
 const EVI_LABEL = { explicit: '原文', inferred: '推断', similarity: '相似' }
 
 const presentTypes = computed(() => {
   if (!overview.value) return []
   return Object.entries(overview.value.entities || [])
-    .map(([t, n]) => ({ t, n, ...(TYPE_STYLE[t] || { color: '#999', zh: t }) }))
+    .map(([t, n]) => ({ t, n, ...(TYPE_STYLE[t] || { color: '#9aa7b8', zh: t }) }))
 })
 
 let cy = null
 
+// ---------- 银河布局：论文=恒星放内环，它的实体按最近归属绕成旋臂；孤岛实体撒外圈星尘 ----------
+function galaxyPositions(nodes, edges) {
+  const byId = Object.fromEntries(nodes.map(n => [n.id, n]))
+  const adj = {}
+  edges.forEach(e => {
+    (adj[e.source] ||= new Set()).add(e.target);
+    (adj[e.target] ||= new Set()).add(e.source)
+  })
+  const papers = nodes.filter(n => n.type === 'Paper')
+  const owner = {}
+  const queue = []
+  papers.forEach(p => { owner[p.id] = p.id; queue.push(p.id) })
+  while (queue.length) {
+    const cur = queue.shift();
+    (adj[cur] || []).forEach(nb => {
+      if (!(nb in owner)) { owner[nb] = owner[cur]; queue.push(nb) }
+    })
+  }
+  const pos = {}
+  const GA = 2.399963  // 黄金角，旋臂自然散开
+  papers.forEach((p, k) => {
+    const angle = (k * 2 * Math.PI) / Math.max(1, papers.length) - Math.PI / 2
+    const R = 300
+    const px = Math.cos(angle) * R, py = Math.sin(angle) * R * 0.72
+    pos[p.id] = { x: px, y: py }
+    const members = nodes.filter(n => owner[n.id] === p.id && n.id !== p.id)
+    members.forEach((m, j) => {
+      const a = angle + j * GA
+      const r = 66 + Math.sqrt(j) * 42
+      pos[m.id] = { x: px + Math.cos(a) * r, y: py + Math.sin(a) * r * 0.8 }
+    })
+  })
+  // 没有任何关系的孤岛 → 外圈星尘带
+  const dust = nodes.filter(n => !(n.id in pos))
+  dust.forEach((m, j) => {
+    const a = j * GA
+    const r = 430 + (j % 7) * 26
+    pos[m.id] = { x: Math.cos(a) * r, y: Math.sin(a) * r * 0.8 }
+  })
+  return pos
+}
+
 function renderGraph(data) {
   graphData.value = data
   if (!cy) return
+  const visible = data.nodes.filter(n => showDust.value || n.degree > 0 || n.is_library_paper)
+  const keep = new Set(visible.map(n => n.id))
+  const shownEdges = data.edges.filter(e => keep.has(e.source) && keep.has(e.target))
+  nodeCount.value = visible.length
+  edgeCount.value = shownEdges.length
+  const pos = galaxyPositions(visible, shownEdges)
   const els = [
-    ...data.nodes.map(n => ({
-      data: {
-        id: n.id, label: n.label, ntype: n.type, degree: n.degree,
-        lib: !!n.is_library_paper, desc: n.description,
-      },
-    })),
-    ...data.edges.map(e => ({
+    ...visible.map(n => {
+      const st = TYPE_STYLE[n.type] || { color: '#9aa7b8' }
+      const isPaper = n.type === 'Paper'
+      const size = isPaper ? 46 : Math.min(50, 20 + Math.sqrt(n.degree) * 9)
+      return {
+        data: {
+          id: n.id, l: n.label_zh || n.label, ntype: n.type, degree: n.degree,
+          lib: !!n.is_library_paper, c: st.color, size,
+          glow: isPaper ? 20 : 6 + Math.min(10, n.degree),
+        },
+        position: pos[n.id] || { x: 0, y: 0 },
+      }
+    }),
+    ...shownEdges.map(e => ({
       data: {
         id: 'e_' + e.id, source: e.source, target: e.target,
-        rtype: e.relation_type, etype: e.evidence_type,
-        conf: e.confidence, rid: e.id, evc: e.evidence_count,
+        rl: REL_ZH[e.relation_type] || e.relation_type,
+        etype: e.evidence_type, conf: e.confidence, rid: e.id,
       },
     })),
   ]
   cy.elements().remove()
   cy.add(els)
-  cy.nodes().forEach(n => {
-    const st = TYPE_STYLE[n.data('ntype')] || { color: '#999', shape: 'ellipse' }
-    n.style('background-color', st.color)
-    n.style('shape', st.shape)
-  })
-  const layout = cy.elements().layout({
-    name: 'cose', animate: false, randomize: true,
-    idealEdgeLength: () => 90, nodeOverlap: 12, nodeRepulsion: () => 9000,
-  })
-  layout.run()
-  cy.fit(undefined, 40)
+  // 直接使用星系极坐标预设（论文=恒星内环，成员黄金角旋臂环绕，孤岛星尘外圈）。
+  // 不再跑 cose 二次松弛——实测它会无视初始位置把整张图压成一团。
+  cy.fit(undefined, 80)
 }
 
 async function loadGraph() {
@@ -107,6 +161,11 @@ function toggleType(t) {
   s.has(t) ? s.delete(t) : s.add(t)
   activeTypes.value = s
   loadGraph()
+}
+
+function toggleDust() {
+  showDust.value = !showDust.value
+  if (graphData.value) renderGraph(graphData.value)
 }
 
 async function openTopics() {
@@ -136,24 +195,27 @@ function switchView(v) {
   else loadGraph()
 }
 
-// ---------- 详情面板 ----------
-
-async function onNodeTap(evt) {
-  const id = evt.target.data('id')
-  try {
-    const d = await api.kgEntity(id)
-    panel.value = { kind: 'entity', d }
-  } catch (e) {
-    toast('实体详情加载失败：' + e.message, 'err')
-  }
+// ---------- 悬停聚光：点亮邻居，其余星体变暗 ----------
+function spotlight(evt) {
+  const ele = evt.target
+  const neighborhood = ele.closedNeighborhood()
+  cy.elements().addClass('dimmed')
+  neighborhood.removeClass('dimmed')
+  neighborhood.addClass('hl')
 }
 
-async function onEdgeTap(evt) {
-  const rid = evt.target.data('rid')
+function clearSpotlight() {
+  cy.elements().removeClass('dimmed').removeClass('hl')
+}
+
+// ---------- 详情面板 ----------
+const zhName = d => d.name_zh || d.name
+
+async function onNodeTap(evt) {
   try {
-    panel.value = { kind: 'relation', d: await api.kgRelation(rid) }
+    panel.value = { kind: 'entity', d: await api.kgEntity(evt.target.data('id')) }
   } catch (e) {
-    toast('关系详情加载失败：' + e.message, 'err')
+    toast('实体详情加载失败：' + e.message, 'err')
   }
 }
 
@@ -163,8 +225,11 @@ async function openRelation(rid) {
   } catch { /* ignore */ }
 }
 
-// ---------- 抽取任务 ----------
+async function onEdgeTap(evt) {
+  openRelation(evt.target.data('rid'))
+}
 
+// ---------- 抽取任务 ----------
 async function pollJobs() {
   try {
     const jobs = await api.kgJobs()
@@ -179,9 +244,9 @@ async function pollJobs() {
       clearInterval(jobsTimer.value)
       jobsTimer.value = null
       await loadOverview()
-      if (had) loadGraph()  // 任务全部结束后刷新当前视图
+      if (had) loadGraph()
     }
-  } catch { /* 网络抖动忽略，下一轮再取 */ }
+  } catch { /* 网络抖动忽略 */ }
 }
 
 function watchJobs() {
@@ -226,34 +291,54 @@ onMounted(async () => {
       {
         selector: 'node',
         style: {
-          label: 'data(label)', 'font-size': 11, color: '#23272d',
-          'background-color': '#999', width: 26, height: 26,
-          'border-width': 1, 'border-color': '#fff',
-          'text-valign': 'bottom', 'text-margin-y': 4,
+          label: 'data(l)', 'font-size': 11.5, color: '#e9efff',
+          'font-family': '"PingFang SC","Microsoft YaHei",system-ui,sans-serif',
+          'background-color': 'data(c)', width: 'data(size)', height: 'data(size)',
+          'border-width': 0,
+          'underlay-color': 'data(c)', 'underlay-opacity': 0.28,
+          'underlay-padding': 'data(glow)',
+          'text-valign': 'bottom', 'text-margin-y': 5,
           'text-wrap': 'ellipsis', 'text-max-width': 110,
-          'min-zoomed-font-size': 6,
+          'text-outline-color': '#060b18', 'text-outline-width': 2,
+          'min-zoomed-font-size': 7,
+          'transition-property': 'opacity', 'transition-duration': 200,
         },
       },
       {
         selector: 'node[lib]',
-        style: { 'border-width': 2.5, 'border-color': '#2f5e8e', width: 34, height: 34, 'font-size': 12 },
+        style: { 'border-width': 2, 'border-color': '#dff0ff', 'font-size': 13 },
       },
       {
         selector: 'edge',
         style: {
-          width: 1.6, 'line-color': '#b9b4a8', 'curve-style': 'bezier',
-          label: 'data(rtype)', 'font-size': 8.5, 'color': '#8b93a0',
-          'text-background-color': '#f6f5f1', 'text-background-opacity': 0.85,
-          'text-background-padding': 1, 'min-zoomed-font-size': 9,
+          width: 1.5, 'line-color': '#5b7bb8', 'line-opacity': 0.38,
+          'curve-style': 'bezier',
+          label: 'data(rl)', 'font-size': 10, color: '#a8bdee',
+          'font-family': '"PingFang SC","Microsoft YaHei",system-ui,sans-serif',
+          'text-background-color': '#0a1226', 'text-background-opacity': 0.9,
+          'text-background-padding': 2,
+          'min-zoomed-font-size': 12,
+          'transition-property': 'line-opacity width', 'transition-duration': 200,
         },
       },
-      { selector: 'edge[etype="inferred"]', style: { 'line-style': 'dashed', 'line-color': '#b3423a' } },
+      { selector: 'edge[etype="inferred"]', style: { 'line-style': 'dashed', 'line-color': '#d29a7a' } },
       { selector: 'edge[etype="similarity"]', style: { 'line-style': 'dotted', 'line-color': '#8b93a0' } },
-      { selector: 'node:selected', style: { 'overlay-color': '#eaf1f8', 'overlay-opacity': 0.5 } },
-      { selector: 'edge:selected', style: { width: 3, 'line-color': '#2f5e8e' } },
+      { selector: '.dimmed', style: { opacity: 0.1 } },
+      {
+        selector: 'node.hl',
+        style: { 'underlay-opacity': 0.5, 'border-width': 1.5, 'border-color': '#ffffffcc' },
+      },
+      {
+        selector: 'edge.hl',
+        style: { 'line-opacity': 0.95, 'line-color': '#8fb4ff', width: 2.4, 'min-zoomed-font-size': 0 },
+      },
     ],
     wheelSensitivity: 0.25,
   })
+  cy.on('mouseover', 'node', spotlight)
+  cy.on('mouseout', 'node', clearSpotlight)
+  cy.on('mouseover', 'edge', spotlight)
+  cy.on('mouseout', 'edge', clearSpotlight)
   cy.on('tap', 'node', onNodeTap)
   cy.on('tap', 'edge', onEdgeTap)
   await Promise.all([loadOverview(), loadGraph(), openTopics()])
@@ -272,18 +357,18 @@ onBeforeUnmount(() => {
   <div class="kg-page">
     <div class="kg-head">
       <div>
-        <h1 class="page-title">知识图谱</h1>
+        <h1 class="page-title">知识星图</h1>
         <p class="page-sub" v-if="overview">
-          {{ overview.entities_total }} 个实体 · {{ overview.relations_total }} 条关系 ·
-          覆盖 {{ overview.papers_extracted }}/{{ overview.papers_total }} 篇论文 ·
-          每条关系都可回溯原文证据<template v-if="overview.inferred_relations">
-            （{{ overview.inferred_relations }} 条为推断，虚线显示）</template>
+          {{ overview.entities_total }} 个知识点 · {{ overview.relations_total }} 条关系 ·
+          已纳入 {{ overview.papers_extracted }}/{{ overview.papers_total }} 篇论文 ·
+          每条线都有原文依据<template v-if="overview.inferred_relations">
+           （{{ overview.inferred_relations }} 条为 AI 推断，橙色虚线）</template>
         </p>
       </div>
       <div class="kg-actions">
         <div class="seg">
-          <button :class="{ on: view === 'global' }" @click="switchView('global')">全局网络</button>
-          <button :class="{ on: view === 'topics' }" @click="switchView('topics')">主题视图</button>
+          <button :class="{ on: view === 'global' }" @click="switchView('global')">星系全景</button>
+          <button :class="{ on: view === 'topics' }" @click="switchView('topics')">主题星域</button>
         </div>
         <button class="btn sm" @click="startRebuild" title="为还没有图谱数据的论文自动抽取">⚗ 抽取缺失论文</button>
       </div>
@@ -297,15 +382,18 @@ onBeforeUnmount(() => {
 
     <div v-if="view === 'global'" class="kg-toolbar">
       <select class="select" v-model="selPaper" @change="q = ''; loadGraph()" style="max-width:300px">
-        <option value="">全部论文（全局核心网络）</option>
+        <option value="">全部论文（星系全景）</option>
         <option v-for="p in papers" :key="p.id" :value="p.id">
-          单篇：{{ p.title_zh || p.title }}
+          只看：{{ p.title_zh || p.title }}
         </option>
       </select>
       <input class="input" v-model="q" style="max-width:220px"
-             placeholder="搜实体名，回车定位" @keyup.enter="selPaper = ''; loadGraph()" />
+             placeholder="搜索知识点，回车定位" @keyup.enter="selPaper = ''; loadGraph()" />
       <button class="btn sm" :disabled="loading" @click="loadGraph">刷新</button>
       <button v-if="selPaper" class="btn sm primary" @click="extractOne">重抽此论文</button>
+      <label class="dust-toggle" @click.prevent="toggleDust">
+        <span class="box" :class="{ on: showDust }"></span>显示孤立知识点（{{ (overview?.entities_total || 0) - (nodeCount || 0) }} 个）
+      </label>
       <div class="type-chips">
         <button v-for="t in presentTypes" :key="t.t" class="chip"
                 :style="{ '--c': t.color }" :class="{ off: !activeTypes.has(t.t) }"
@@ -313,37 +401,38 @@ onBeforeUnmount(() => {
           {{ t.zh }} <span class="cnt">{{ t.n }}</span>
         </button>
       </div>
-      <select class="select" v-model="selRelation" @change="loadGraph()" style="max-width:170px">
-        <option value="">全部关系类型</option>
-        <option v-for="r in REL_TYPES" :key="r" :value="r">{{ r }}</option>
+      <select class="select" v-model="selRelation" @change="loadGraph()" style="max-width:160px">
+        <option value="">全部关系</option>
+        <option v-for="r in REL_OPTIONS" :key="r" :value="r">{{ REL_ZH[r] }}</option>
       </select>
     </div>
 
     <div class="kg-body">
       <div v-if="view === 'topics'" class="kg-topiclist">
         <div v-if="!topics.length" class="muted" style="padding:12px">
-          还没有主题。先在全局视图抽取论文，研究领域实体出现后会自动聚类。</div>
+          还没有主题。先在全景里抽取论文，研究领域出现后会自动聚成星域。</div>
         <div v-for="(t, i) in topics" :key="i" class="topic-item"
              :class="{ on: activeTopic === t }" @click="pickTopic(t)">
-          <div class="t-name">{{ t.name }}</div>
-          <div class="t-meta">{{ t.paper_count }} 篇论文 · {{ t.entity_ids.length }} 个核心实体</div>
+          <div class="t-name">{{ t.name_zh || t.name }}</div>
+          <div class="t-meta">{{ t.paper_count }} 篇论文 · {{ t.entity_ids.length }} 个知识点</div>
         </div>
       </div>
 
       <div class="kg-canvas-wrap">
         <div id="kg-canvas"></div>
-        <div v-if="loading" class="kg-loading">加载中…</div>
+        <div v-if="loading" class="kg-loading">星图绘制中…</div>
         <div v-if="graphData && !graphData.nodes.length && !loading" class="kg-empty">
-          还没有图谱数据。<br>点右上「⚗ 抽取缺失论文」，等任务跑完就能看到知识网络。<br>
-          <span class="muted">抽取按章节调用 AI，每篇论文几分钟；之后新导入的论文会自动抽取。</span>
+          还没有星图。<br>点右上「⚗ 抽取缺失论文」，AI 会读论文自动建出知识网络。<br>
+          <span class="muted">每篇论文几分钟；之后新导入的论文自动加入。</span>
         </div>
         <div class="kg-legend">
           <span v-for="(st, t) in TYPE_STYLE" :key="t" class="lg-item" :title="t">
             <i :style="{ background: st.color }"></i>{{ st.zh }}
           </span>
-          <span class="lg-item"><i class="lg-line"></i>实线=原文</span>
-          <span class="lg-item"><i class="lg-line dash"></i>虚线=推断</span>
+          <span class="lg-item"><i class="lg-line"></i>实线 = 论文原话</span>
+          <span class="lg-item"><i class="lg-line dash"></i>橙色虚线 = AI 推断</span>
         </div>
+        <div class="kg-tip">鼠标悬停任意星体 → 只点亮与它直接相关的连线；滚轮缩放后可看到线上的中文关系名</div>
       </div>
 
       <aside class="kg-panel">
@@ -353,7 +442,8 @@ onBeforeUnmount(() => {
             <span class="badge" :style="{ background: (TYPE_STYLE[panel.d.entity_type] || {}).color + '22', color: (TYPE_STYLE[panel.d.entity_type] || {}).color }">
               {{ (TYPE_STYLE[panel.d.entity_type] || {}).zh || panel.d.entity_type }}
             </span>
-            <h3>{{ panel.d.name }}</h3>
+            <h3>{{ zhName(panel.d) }}</h3>
+            <div v-if="panel.d.name_zh && panel.d.name_zh !== panel.d.name" class="muted en-name">{{ panel.d.name }}</div>
             <router-link v-if="panel.d.library_paper_id" class="btn sm" :to="readerUrl(panel.d.library_paper_id)">
               ↗ 打开这篇论文
             </router-link>
@@ -363,8 +453,11 @@ onBeforeUnmount(() => {
           <div class="p-sec">
             <h4>关系（{{ panel.d.relations.length }}）</h4>
             <div v-for="r in panel.d.relations" :key="r.id" class="rel-item" @click="openRelation(r.id)">
-              <span class="rel-dir">{{ r.source_name }} <b class="rel-type"
-                :class="{ inf: r.evidence_type !== 'explicit' }">{{ r.relation_type }}</b> {{ r.target_name }}</span>
+              <span class="rel-dir">
+                {{ r.source_name_zh || r.source_name }}
+                <b class="rel-type" :class="{ inf: r.evidence_type !== 'explicit' }">{{ REL_ZH[r.relation_type] || r.relation_type }}</b>
+                {{ r.target_name_zh || r.target_name }}
+              </span>
               <span class="muted">{{ r.evidence_count }} 条证据</span>
             </div>
             <div v-if="!panel.d.relations.length" class="muted">暂无</div>
@@ -389,15 +482,14 @@ onBeforeUnmount(() => {
         <template v-else-if="panel.kind === 'relation'">
           <div class="p-head">
             <h3 style="font-size:15px">
-              {{ panel.d.source.name }} <b class="rel-type"
-                :class="{ inf: panel.d.evidence_type !== 'explicit' }">{{ panel.d.relation_type }}</b>
-              {{ panel.d.target.name }}</h3>
+              {{ zhName(panel.d.source) }}
+              <b class="rel-type" :class="{ inf: panel.d.evidence_type !== 'explicit' }">{{ REL_ZH[panel.d.relation_type] || panel.d.relation_type }}</b>
+              {{ zhName(panel.d.target) }}</h3>
             <div class="muted" style="font-size:12px">
-              {{ (TYPE_STYLE[panel.d.source.type] || {}).zh || panel.d.source.type }} →
-              {{ (TYPE_STYLE[panel.d.target.type] || {}).zh || panel.d.target.type }} ·
               置信度 {{ Math.round(panel.d.confidence * 100) }}% ·
               <span :class="{ 'ev-warn': panel.d.evidence_type !== 'explicit' }">
                 {{ EVI_LABEL[panel.d.evidence_type] || panel.d.evidence_type }}</span>
+              <template v-if="panel.d.evidence_type !== 'explicit'">（论文没直接说，AI 根据上下文推断）</template>
             </div>
           </div>
           <div class="p-sec">
@@ -416,7 +508,7 @@ onBeforeUnmount(() => {
 
         <!-- 主题详情 -->
         <template v-else-if="panel.kind === 'topic'">
-          <div class="p-head"><h3>{{ panel.topic.name }}</h3>
+          <div class="p-head"><h3>{{ panel.topic.name_zh || panel.topic.name }}</h3>
             <div class="muted" style="font-size:12px">{{ panel.topic.paper_count }} 篇论文</div></div>
           <div class="p-sec">
             <h4>论文</h4>
@@ -430,23 +522,23 @@ onBeforeUnmount(() => {
             <h4>关键关系</h4>
             <div v-for="r in panel.topic.key_relations" :key="r.id" class="rel-item" @click="openRelation(r.id)">
               <span class="rel-dir">{{ r.source_name }} <b class="rel-type"
-                :class="{ inf: r.evidence_type !== 'explicit' }">{{ r.relation_type }}</b> {{ r.target_name }}</span>
+                :class="{ inf: r.evidence_type !== 'explicit' }">{{ REL_ZH[r.relation_type] || r.relation_type }}</b> {{ r.target_name }}</span>
             </div>
             <div v-if="!panel.topic.key_relations.length" class="muted">暂无</div>
           </div>
         </template>
 
         <div v-else class="kg-panel-hint">
-          <p><b>怎么用</b></p>
+          <p><b>这张图怎么读</b></p>
           <ul>
-            <li>点<b>节点</b>看实体详情：是什么、出现在哪些论文、原文在哪</li>
-            <li>点<b>边</b>看关系证据：AI 为什么说 A 改进了 B——原句在此</li>
-            <li>虚线边 = <b>推断关系</b>（论文未明说，AI 谨慎推理），实线边 = 原文明说</li>
-            <li>搜实体名 / 按类型过滤 / 单篇聚焦，都是即时重排</li>
-            <li>阅读器侧边栏新增「图谱」页签，可看当前论文的知识结构</li>
+            <li>每颗 <b style="color:#6aa9ff">蓝色大星</b> 是一篇论文，环绕它的是论文里的方法、数据集、研究问题</li>
+            <li><b>悬停</b>任意星体：只点亮与它直接相关的连线，一眼看清"谁和它有关"</li>
+            <li><b>点击</b>星体或连线 → 右栏看详情和<b>论文原句证据</b>，可一键跳回原文位置</li>
+            <li>放大后能看到每条线上的<b>中文关系名</b>（提出 / 缓解 / 使用…）</li>
+            <li>虚线 = AI 推断（论文没直说），实线 = 论文原话，绝不混淆</li>
           </ul>
           <p class="muted" style="font-size:12px;margin-top:10px">
-            图谱完全由论文原文抽取，每条关系带逐字证据；没有证据的内容不会入库。</p>
+            图谱完全由论文原文抽取，没有证据的内容不会出现在这里。</p>
         </div>
       </aside>
     </div>
@@ -471,6 +563,11 @@ onBeforeUnmount(() => {
 }
 .chip .cnt { color: var(--ink-3); font-weight: 400; }
 .chip.off { opacity: .38; filter: grayscale(.6); }
+.dust-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px;
+  color: var(--ink-2); cursor: pointer; user-select: none; }
+.dust-toggle .box { width: 14px; height: 14px; border-radius: 4px; border: 1px solid var(--line);
+  background: #fff; display: inline-block; }
+.dust-toggle .box.on { background: var(--accent); border-color: var(--accent); }
 .kg-body { display: flex; gap: 14px; flex: 1; min-height: 0; }
 .kg-topiclist { width: 230px; flex-shrink: 0; overflow: auto; }
 .topic-item { padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px;
@@ -479,43 +576,77 @@ onBeforeUnmount(() => {
 .topic-item.on { border-color: var(--accent); background: var(--accent-soft); }
 .t-name { font-weight: 600; font-size: 13.5px; }
 .t-meta { font-size: 12px; color: var(--ink-3); margin-top: 2px; }
-.kg-canvas-wrap { position: relative; flex: 1; min-width: 0; height: calc(100vh - 260px);
-  min-height: 420px; background: var(--panel); border: 1px solid var(--line);
-  border-radius: var(--radius); overflow: hidden; }
-#kg-canvas { width: 100%; height: 100%; }
-.kg-loading { position: absolute; top: 12px; left: 14px; font-size: 12px; color: var(--ink-3); }
-.kg-empty { position: absolute; inset: 0; display: flex; flex-direction: column;
-  align-items: center; justify-content: center; text-align: center; color: var(--ink-2);
+
+/* ---- 深空画布 ---- */
+.kg-canvas-wrap { position: relative; flex: 1; min-width: 0; height: calc(100vh - 265px);
+  min-height: 460px; border-radius: 14px; overflow: hidden;
+  background: radial-gradient(ellipse at 50% 42%, #13224a 0%, #0b1430 46%, #050a1a 100%);
+  border: 1px solid #1d2c52; box-shadow: inset 0 0 120px rgba(20, 40, 90, .45); }
+#kg-canvas { position: absolute; inset: 0; z-index: 1; }
+/* 三层静态星野 */
+.kg-canvas-wrap::before, .kg-canvas-wrap::after { content: ''; position: absolute; inset: 0;
+  pointer-events: none; z-index: 0; }
+.kg-canvas-wrap::before { background-image:
+  radial-gradient(1.2px 1.2px at 12% 22%, rgba(255,255,255,.9), transparent 60%),
+  radial-gradient(1px 1px at 38% 68%, rgba(255,255,255,.55), transparent 60%),
+  radial-gradient(1.4px 1.4px at 67% 18%, rgba(190,215,255,.85), transparent 60%),
+  radial-gradient(1px 1px at 82% 52%, rgba(255,255,255,.6), transparent 60%),
+  radial-gradient(1.1px 1.1px at 52% 84%, rgba(210,225,255,.7), transparent 60%),
+  radial-gradient(1px 1px at 8% 76%, rgba(255,255,255,.5), transparent 60%),
+  radial-gradient(1.3px 1.3px at 92% 82%, rgba(255,255,255,.7), transparent 60%),
+  radial-gradient(1px 1px at 27% 41%, rgba(255,255,255,.45), transparent 60%);
+  background-size: 520px 520px; }
+.kg-canvas-wrap::after { background-image:
+  radial-gradient(1px 1px at 18% 55%, rgba(160,190,255,.5), transparent 60%),
+  radial-gradient(1px 1px at 46% 12%, rgba(255,255,255,.5), transparent 60%),
+  radial-gradient(1px 1px at 73% 38%, rgba(180,205,255,.6), transparent 60%),
+  radial-gradient(1px 1px at 88% 12%, rgba(255,255,255,.45), transparent 60%),
+  radial-gradient(1px 1px at 33% 90%, rgba(200,220,255,.5), transparent 60%);
+  background-size: 340px 340px; opacity: .8; }
+.kg-loading { position: absolute; top: 12px; left: 16px; z-index: 2; font-size: 12px;
+  color: #8fa5d8; }
+.kg-empty { position: absolute; inset: 0; z-index: 2; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; text-align: center; color: #c6d4f5;
   line-height: 2; font-size: 14px; }
-.kg-legend { position: absolute; bottom: 10px; left: 12px; right: 12px; display: flex;
-  flex-wrap: wrap; gap: 10px; font-size: 11.5px; color: var(--ink-3); pointer-events: none; }
+.kg-legend { position: absolute; bottom: 12px; left: 14px; right: 14px; z-index: 2;
+  display: flex; flex-wrap: wrap; gap: 10px; font-size: 11.5px; color: #9db1dd;
+  pointer-events: none; }
 .lg-item { display: inline-flex; align-items: center; gap: 5px; }
-.lg-item i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
-.lg-line { width: 16px !important; height: 0 !important; border-top: 2px solid #b9b4a8; border-radius: 0 !important; }
-.lg-line.dash { border-top-style: dashed; border-top-color: #b3423a; }
-.kg-panel { width: 360px; flex-shrink: 0; overflow: auto; background: var(--panel);
-  border: 1px solid var(--line); border-radius: var(--radius); padding: 16px; }
-.kg-panel-hint { font-size: 13px; line-height: 1.9; color: var(--ink-2); }
+.lg-item i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.lg-line { width: 16px !important; height: 0 !important; border-radius: 0 !important;
+  border-top: 2px solid #5b7bb8; }
+.lg-line.dash { border-top-style: dashed; border-top-color: #d29a7a; }
+.kg-tip { position: absolute; top: 12px; right: 16px; z-index: 2; font-size: 12px;
+  color: #8fa5d8; background: rgba(10, 18, 38, .55); border: 1px solid #1d2c52;
+  padding: 4px 10px; border-radius: 12px; }
+
+/* ---- 右侧详情面板 ---- */
+.kg-panel { width: 360px; flex-shrink: 0; overflow: auto; background: #0d1530;
+  color: #dfe7ff; border: 1px solid #1d2c52; border-radius: 14px; padding: 16px; }
+.kg-panel-hint { font-size: 13px; line-height: 1.9; color: #b9c6e8; }
 .kg-panel-hint ul { margin: 6px 0; padding-left: 18px; }
-.p-head h3 { margin: 8px 0 6px; font-size: 16px; }
-.p-desc { font-size: 13px; color: var(--ink-2); margin: 6px 0; }
-.p-alias { font-size: 12.5px; color: var(--ink-3); margin: 4px 0; }
+.kg-panel .muted { color: #7e90bd !important; }
+.p-head h3 { margin: 8px 0 6px; font-size: 16px; color: #f2f6ff; }
+.en-name { font-size: 12px; }
+.p-desc { font-size: 13px; color: #b9c6e8; margin: 6px 0; }
+.p-alias { font-size: 12.5px; color: #7e90bd; margin: 4px 0; }
 .p-sec { margin-top: 14px; }
-.p-sec h4 { margin: 0 0 8px; font-size: 13px; color: var(--ink-3); font-weight: 600; }
+.p-sec h4 { margin: 0 0 8px; font-size: 13px; color: #7e90bd; font-weight: 600; }
 .rel-item { display: flex; justify-content: space-between; gap: 8px; align-items: center;
   padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 12.8px; }
-.rel-item:hover { background: var(--accent-soft); }
+.rel-item:hover { background: rgba(110, 140, 220, .12); }
 .rel-dir { flex: 1; min-width: 0; }
-.rel-type { color: var(--accent); font-size: 11px; padding: 0 3px; }
-.rel-type.inf { color: var(--danger); }
-.ev-warn { color: var(--warn); }
-.ev-item { border-left: 3px solid var(--line); padding: 6px 10px; margin-bottom: 10px; }
-.ev-meta { font-size: 12px; color: var(--ink-3); display: flex; gap: 6px; flex-wrap: wrap; }
-.ev-paper { color: var(--ink-2); font-weight: 600; }
-.ev-badge { padding: 0 6px; border-radius: 8px; background: var(--accent-soft); color: var(--accent); font-size: 11px; }
-.ev-badge.inferred { background: #fbeae8; color: var(--danger); }
-.ev-text { font-size: 12.8px; color: var(--ink); margin: 4px 0; line-height: 1.6; }
-.ev-jump { font-size: 12px; }
+.rel-type { color: #8fb4ff; font-size: 11px; padding: 0 3px; font-weight: 700; }
+.rel-type.inf { color: #ffb08a; }
+.ev-warn { color: #ffb08a; }
+.ev-item { border-left: 3px solid #24345e; padding: 6px 10px; margin-bottom: 10px; }
+.ev-meta { font-size: 12px; color: #7e90bd; display: flex; gap: 6px; flex-wrap: wrap; }
+.ev-paper { color: #c3d0f0; font-weight: 600; }
+.ev-badge { padding: 0 6px; border-radius: 8px; background: rgba(110, 140, 220, .18);
+  color: #8fb4ff; font-size: 11px; }
+.ev-badge.inferred { background: rgba(255, 150, 100, .15); color: #ffb08a; }
+.ev-text { font-size: 12.8px; color: #e6ecfb; margin: 4px 0; line-height: 1.6; }
+.ev-jump { font-size: 12px; color: #8fb4ff !important; }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--panel); }
 .seg button { border: 0; background: transparent; padding: 6px 14px; font-size: 13px; cursor: pointer; color: var(--ink-2); }
 .seg button.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }

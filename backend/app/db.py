@@ -107,6 +107,7 @@ CREATE TABLE IF NOT EXISTS kg_entities(
   entity_type TEXT NOT NULL,
   canonical_name TEXT NOT NULL,
   normalized_name TEXT NOT NULL,
+  name_zh TEXT DEFAULT '',
   description TEXT DEFAULT '',
   metadata_json TEXT DEFAULT '{}',
   created_at TEXT DEFAULT '',
@@ -243,6 +244,9 @@ def _migrate(c):
     for col in ("plain", "ask"):
         if col not in bcols:
             c.execute(f"ALTER TABLE blocks ADD COLUMN {col} TEXT DEFAULT ''")
+    kg_cols = {r[1] for r in c.execute("PRAGMA table_info(kg_entities)")}
+    if "name_zh" not in kg_cols:
+        c.execute("ALTER TABLE kg_entities ADD COLUMN name_zh TEXT DEFAULT ''")
 
 
 # ---------- settings 便捷方法 ----------

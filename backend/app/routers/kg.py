@@ -135,3 +135,13 @@ async def retry_job(job_id: str, background: BackgroundTasks):
        "progress=0, updated_at=? WHERE id=?", (now(), job_id))
     background.add_task(kg_extract.run_job, job_id)
     return {"ok": True}
+
+
+@router.post("/translate-names")
+async def translate_names():
+    """为还没有中文名的实体批量补翻（结果缓存进库，一次性成本）。"""
+    try:
+        updated = await kg_extract.translate_missing_names()
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
+    return {"updated": updated}

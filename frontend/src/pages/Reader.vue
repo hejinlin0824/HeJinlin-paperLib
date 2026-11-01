@@ -612,7 +612,7 @@ onBeforeUnmount(() => {
                 <div v-for="it in sec.items" :key="it.entity_id + ':' + it.relation_id"
                      class="side-item kg-item" style="white-space:normal"
                      :title="'点击定位原文证据'" @click="it.block_id && scrollToBlock(it.block_id)">
-                  <span class="t" style="font-weight:600">{{ it.name }}</span>
+                  <span class="t" style="font-weight:600">{{ it.name_zh || it.name }}</span>
                   <span v-if="it.evidence_text" class="kg-quote">“{{ it.evidence_text.slice(0, 64) }}…”</span>
                 </div>
               </div>

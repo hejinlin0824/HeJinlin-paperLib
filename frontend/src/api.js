@@ -84,6 +84,7 @@ export const api = {
   kgExtractPaper: (pid) => request(`/api/knowledge-graph/papers/${pid}/extract`, { method: 'POST' }),
   kgRebuild: () => request('/api/knowledge-graph/rebuild', { method: 'POST' }),
   kgRetryJob: (jid) => request(`/api/knowledge-graph/jobs/${jid}/retry`, { method: 'POST' }),
+  kgTranslateNames: () => request('/api/knowledge-graph/translate-names', { method: 'POST' }),
 }
 
 export default api

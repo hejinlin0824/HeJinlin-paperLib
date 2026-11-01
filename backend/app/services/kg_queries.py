@@ -92,7 +92,7 @@ def graph(paper_id: str | None = None, entity_ids: list[str] | None = None,
     ids = _type_filter(ids)[:MAX_NODES]
     marks = ",".join("?" * len(ids))
     nodes = rows(
-        f"SELECT e.id, e.entity_type, e.canonical_name, e.description, e.metadata_json, "
+        f"SELECT e.id, e.entity_type, e.canonical_name, e.name_zh, e.description, e.metadata_json, "
         f"(SELECT COUNT(*) FROM kg_relations r WHERE r.source_entity_id=e.id OR "
         f"r.target_entity_id=e.id) deg FROM kg_entities e WHERE e.id IN ({marks})", ids)
     rel_filter, rel_args = "", []
@@ -110,7 +110,8 @@ def graph(paper_id: str | None = None, entity_ids: list[str] | None = None,
     node_set = {n["id"] for n in nodes}
     import json as _json
     out_nodes = [{
-        "id": n["id"], "label": n["canonical_name"], "type": n["entity_type"],
+        "id": n["id"], "label": n["canonical_name"],
+        "label_zh": n["name_zh"] or "", "type": n["entity_type"],
         "degree": n["deg"], "description": n["description"] or "",
         "is_library_paper": n["id"].startswith("paper_") or bool(
             (_json.loads(n["metadata_json"] or "{}") or {}).get("library_paper_id")),
@@ -156,8 +157,10 @@ def entity_detail(eid: str) -> dict | None:
         "SELECT alias FROM kg_entity_aliases WHERE entity_id=? ORDER BY id LIMIT 30", (eid,))]
     evidence = [_evi_out(x) for x in rows(_EVI_SQL.format(cond="ev.entity_id=?"), (eid, 50))]
     relations = rows(
-        "SELECT r.*, s.canonical_name AS source_name, s.entity_type AS source_type, "
-        "t.canonical_name AS target_name, t.entity_type AS target_type, "
+        "SELECT r.*, s.canonical_name AS source_name, s.name_zh AS source_name_zh, "
+        "s.entity_type AS source_type, "
+        "t.canonical_name AS target_name, t.name_zh AS target_name_zh, "
+        "t.entity_type AS target_type, "
         "(SELECT COUNT(*) FROM kg_evidence ev WHERE ev.relation_id=r.id) evidence_count "
         "FROM kg_relations r JOIN kg_entities s ON s.id=r.source_entity_id "
         "JOIN kg_entities t ON t.id=r.target_entity_id "
@@ -167,7 +170,7 @@ def entity_detail(eid: str) -> dict | None:
     meta = _json.loads(e["metadata_json"] or "{}") or {}
     return {
         "id": e["id"], "entity_type": e["entity_type"], "name": e["canonical_name"],
-        "description": e["description"] or "", "aliases": aliases,
+        "name_zh": e["name_zh"] or "", "description": e["description"] or "", "aliases": aliases,
         "library_paper_id": meta.get("library_paper_id") or (
             e["id"][6:] if e["id"].startswith("paper_") else None),
         "evidence": evidence, "relations": relations,
@@ -187,8 +190,10 @@ def neighbors(eid: str, limit: int = 60) -> dict:
 
 def relation_detail(rid: str) -> dict | None:
     r = row(
-        "SELECT r.*, s.canonical_name AS source_name, s.entity_type AS source_type, "
-        "t.canonical_name AS target_name, t.entity_type AS target_type "
+        "SELECT r.*, s.canonical_name AS source_name, s.name_zh AS source_name_zh, "
+        "s.entity_type AS source_type, "
+        "t.canonical_name AS target_name, t.name_zh AS target_name_zh, "
+        "t.entity_type AS target_type "
         "FROM kg_relations r JOIN kg_entities s ON s.id=r.source_entity_id "
         "JOIN kg_entities t ON t.id=r.target_entity_id WHERE r.id=?", (rid,))
     if not r:
@@ -198,9 +203,9 @@ def relation_detail(rid: str) -> dict | None:
         "id": r["id"], "relation_type": r["relation_type"],
         "evidence_type": r["evidence_type"], "confidence": r["confidence"],
         "source": {"id": r["source_entity_id"], "name": r["source_name"],
-                   "type": r["source_type"]},
+                   "name_zh": r["source_name_zh"] or "", "type": r["source_type"]},
         "target": {"id": r["target_entity_id"], "name": r["target_name"],
-                   "type": r["target_type"]},
+                   "name_zh": r["target_name_zh"] or "", "type": r["target_type"]},
         "evidence": evidence,
     }
 
@@ -214,7 +219,8 @@ def paper_structure(pid: str) -> dict | None:
               "ORDER BY updated_at DESC LIMIT 1", (pid,))
     rels = rows(
         "SELECT r.id AS rid, r.relation_type, r.evidence_type, r.confidence, "
-        "t.id AS entity_id, t.canonical_name AS name, t.entity_type AS entity_type, "
+        "t.id AS entity_id, t.canonical_name AS name, t.name_zh AS name_zh, "
+        "t.entity_type AS entity_type, "
         "t.description, ev.block_id, ev.evidence_text, ev.section_name "
         "FROM kg_relations r JOIN kg_entities t ON t.id=r.target_entity_id "
         "JOIN kg_evidence ev ON ev.relation_id=r.id "
@@ -231,6 +237,7 @@ def paper_structure(pid: str) -> dict | None:
             continue
         seen.add(key)
         item = {"entity_id": r["entity_id"], "name": r["name"],
+                "name_zh": r["name_zh"] or "",
                 "entity_type": r["entity_type"], "relation_id": r["rid"],
                 "relation_type": r["relation_type"], "evidence_type": r["evidence_type"],
                 "block_id": r["block_id"], "evidence_text": r["evidence_text"],
