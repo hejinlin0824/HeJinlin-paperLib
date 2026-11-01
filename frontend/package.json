@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test:graph": "node --test tests/graphEdges.test.js"
+    "test:graph": "node --test tests/graphEdges.test.js tests/graphLayout.test.js"
   },
   "dependencies": {
     "graphology": "^0.26.0",

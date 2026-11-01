@@ -1,14 +1,11 @@
 <script setup>
-// 知识星图 · 银河视图（sigma.js WebGL 渲染）
-// 设计参照真实星图/星系可视化的通用做法（3d-force-graph / sigma showcase）：
-// 1) 星点=径向渐变发光 sprite（运行时 canvas 生成），绝不是实心圆+方形光圈；
-// 2) 连线 1px 极淡如星座，只有悬停时点亮；3) 标签只留给"恒星"（论文）和悬停星体；
-// 4) 背景深空+星云+星野，给星点留呼吸感。
+// 科研知识关系图：以实体类别组织空间，以真实关系表达知识联系。
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import * as SigmaPkg from 'sigma'
 import Graph from 'graphology'
 import api from '../api'
 import { groupRelationsByEndpoints } from '../utils/graphEdges'
+import { computeCameraFit, computeSemanticLayout } from '../utils/graphLayout'
 import { toast } from '../stores'
 
 const Sigma = SigmaPkg.default ?? SigmaPkg.Sigma
@@ -63,55 +60,7 @@ const presentTypes = computed(() => {
     .map(([t, n]) => ({ t, n, ...(TYPE_STYLE[t] || { color: '#9aa7b8', zh: t }) }))
 })
 
-// ---------- 语义分列布局 ----------
-// 节点按实体类别分列，列内按连接度与名称稳定排序。列只表达“类别”，
-// 不暗示节点间的语义距离；真实关系仍只由数据库中的边决定。
-const TYPE_LANE = {
-  Paper: 0,
-  ResearchProblem: 1,
-  Algorithm: 2,
-  Model: 3,
-  Concept: 4,
-  Task: 4,
-  Dataset: 5,
-  Metric: 5,
-  Finding: 6,
-  ResearchArea: 6,
-  Author: 7,
-  Venue: 7,
-  Institution: 7,
-}
-const LANE_GAP = 250
-const ROW_GAP = 92
-// 真实库数据的密度验证结论：概念列可达 40+ 节点，单列 92px 行距会把整图撑到
-// 4000px 高，fit 全图后节点只剩 1-2px、标签全部低于阈值——视觉上等于空白。
-// 长列折成多子列，把画布高度控制在可读范围内。
-const LANE_MAX_ROWS = 12
-const SUBCOL_GAP = 180
-
-function forcePositions(nodes) {
-  const lanes = new Map()
-  for (const node of nodes) {
-    const lane = TYPE_LANE[node.type] ?? 4
-    if (!lanes.has(lane)) lanes.set(lane, [])
-    lanes.get(lane).push(node)
-  }
-  const result = {}
-  for (const [lane, items] of lanes) {
-    items.sort((a, b) => (b.degree || 0) - (a.degree || 0)
-      || String(a.label_zh || a.label).localeCompare(String(b.label_zh || b.label), 'zh-CN'))
-    items.forEach((node, index) => {
-      const col = Math.floor(index / LANE_MAX_ROWS)
-      const row = index % LANE_MAX_ROWS
-      const colCount = Math.min(LANE_MAX_ROWS, items.length - col * LANE_MAX_ROWS)
-      result[node.id] = {
-        x: lane * LANE_GAP + col * SUBCOL_GAP,
-        y: (row - (colCount - 1) / 2) * ROW_GAP,
-      }
-    })
-  }
-  return result
-}
+// 布局计算与相机适配由独立、可测试的 graphLayout 模块负责。
 
 // ---------- sigma 渲染 ----------
 let renderer = null
@@ -120,24 +69,29 @@ let hoveredNode = null
 let hoveredNeighbors = new Set()
 let hoveredEdge = null
 let focusNode = ''
+let layoutBounds = null
+let fullViewMode = false
 
-function fitCamera(duration = 250) {
+function fitCamera({ full = false, duration = 250 } = {}) {
   if (!renderer || !graph || !graph.order) return
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-  graph.forEachNode((n, attr) => {
-    minX = Math.min(minX, attr.x); maxX = Math.max(maxX, attr.x)
-    minY = Math.min(minY, attr.y); maxY = Math.max(maxY, attr.y)
-  })
+  fullViewMode = full
   const el = renderer.getContainer()
-  const w = el.clientWidth || 1200, h = el.clientHeight || 700
-  // 缩放比封顶：fit 全图时节点会小到 1-2px（且标签全部隐藏），视觉上等于空白。
-  // 初始只放到最远 1.6×，保证节点可辨；全景由用户滚轮自行缩放。
-  const ratio = Math.max(0.05, Math.min(
-    Math.max((maxX - minX + 120) / w, (maxY - minY + 120) / h), 1.6))
-  renderer.getCamera().animate(
-    { x: (minX + maxX) / 2, y: (minY + maxY) / 2, ratio: Math.max(0.05, ratio), angle: 0 },
-    { duration },
+  const fitBounds = layoutBounds || (() => {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    graph.forEachNode((n, attr) => {
+      minX = Math.min(minX, attr.x); maxX = Math.max(maxX, attr.x)
+      minY = Math.min(minY, attr.y); maxY = Math.max(maxY, attr.y)
+    })
+    return { minX, maxX, minY, maxY }
+  })()
+  const fit = computeCameraFit(
+    fitBounds,
+    { width: el.clientWidth || 1200, height: el.clientHeight || 700 },
+    { padding: 90, minRatio: 0.06, maxRatio: 40 },
   )
+  // 默认视图优先保持节点可辨；“适配全图”按钮完整适配整个边界框。
+  const ratio = full ? fit.ratio : Math.min(fit.ratio, 1.6)
+  renderer.getCamera().animate({ ...fit, ratio, angle: 0 }, { duration })
 }
 
 function renderGraph(data) {
@@ -148,13 +102,9 @@ function renderGraph(data) {
   const shownEdges = data.edges.filter(e => keep.has(e.source) && keep.has(e.target))
   nodeCount.value = visible.length
   edgeCount.value = shownEdges.length
-  const pos = forcePositions(visible)
-  window.__kgLastRender = {
-    nodes: visible.length, edges: shownEdges.length,
-    graphOrder: graph.order, graphSize: graph.size,
-    sample: visible[0] ? { id: visible[0].id, x: pos[visible[0].id]?.x, y: pos[visible[0].id]?.y } : null,
-    t: new Date().toISOString().slice(17, 23),
-  }
+  const layout = computeSemanticLayout(visible)
+  const pos = layout.positions
+  layoutBounds = layout.bounds
 
   hoveredNode = null
   hoveredNeighbors = new Set()
@@ -191,7 +141,16 @@ function renderGraph(data) {
       _relationCount: relations.length,
     })
   }
-  fitCamera(focusNode ? 0 : 250)
+  // Expose the completed layout (not the previous graph state) for acceptance diagnostics.
+  window.__kgLastRender = {
+    nodes: visible.length, edges: shownEdges.length,
+    graphOrder: graph.order, graphSize: graph.size,
+    sample: visible[0] ? { id: visible[0].id, x: pos[visible[0].id]?.x, y: pos[visible[0].id]?.y } : null,
+    lanes: layout.lanes,
+    bounds: layout.bounds,
+    t: new Date().toISOString().slice(17, 23),
+  }
+  fitCamera({ full: false, duration: focusNode ? 0 : 250 })
   if (focusNode && graph.hasNode(focusNode)) {
     const a = graph.getNodeAttributes(focusNode)
     renderer.getCamera().animate({ x: a.x, y: a.y, ratio: 0.28 }, { duration: 350 })
@@ -285,8 +244,11 @@ async function openRelation(rid) {
 
 async function openRelationGroup(rids) {
   try {
-    const relations = await Promise.all(rids.map(rid => api.kgRelation(rid)))
-    panel.value = { kind: 'relationGroup', relations: relations.filter(Boolean) }
+    const results = await Promise.allSettled(rids.map(rid => api.kgRelation(rid)))
+    const relations = results.filter(result => result.status === 'fulfilled' && result.value)
+      .map(result => result.value)
+    if (!relations.length) throw new Error('没有成功读取到关系详情')
+    panel.value = { kind: 'relationGroup', relations, failedCount: results.length - relations.length }
   } catch (e) {
     toast('关系详情加载失败：' + e.message, 'err')
   }
@@ -361,6 +323,10 @@ function onSearch() {
   loadGraph()
 }
 
+function onGraphResize() {
+  fitCamera({ full: fullViewMode, duration: 150 })
+}
+
 function ensureRenderer() {
   // 惰性初始化：默认视图是"知识总览"，画布容器在 v-show 下 display:none（宽度 0），
   // Sigma 构造时会抛 "Container has no width"。因此只在第一次真正渲染图时创建；
@@ -371,8 +337,10 @@ function ensureRenderer() {
     allowInvalidContainer: true,
     enableEdgeEvents: true,
     minCameraRatio: 0.06,
-    maxCameraRatio: 10,
-    labelRenderedSizeThreshold: 4,
+    maxCameraRatio: 40,
+    labelRenderedSizeThreshold: 7,
+    labelDensity: 0.07,
+    labelGridCellSize: 110,
     nodeLabelSize: 12,
     nodeLabelColor: '#263548',
     labelWeight: '600',
@@ -460,6 +428,7 @@ function ensureRenderer() {
 }
 
 onMounted(async () => {
+  window.addEventListener('resize', onGraphResize)
   try {
     await Promise.all([loadOverview(), openTopics()])
     papers.value = await api.papers().catch(() => [])
@@ -472,6 +441,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('resize', onGraphResize)
   if (jobsTimer.value) clearInterval(jobsTimer.value)
   if (renderer) { renderer.kill(); renderer = null }
 })
@@ -576,11 +546,14 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="kg-canvas-wrap">
-        <div class="nebula"></div>
+        <div class="kg-canvas-controls">
+          <button class="btn sm" type="button" @click="fitCamera({ full: true })">适配全图</button>
+          <button class="btn sm" type="button" @click="fitCamera({ full: false })">可读视图</button>
+        </div>
         <div id="kg-canvas"></div>
-        <div v-if="loading" class="kg-loading">星图绘制中…</div>
+        <div v-if="loading" class="kg-loading">知识关系图加载中…</div>
         <div v-if="graphData && !graphData.nodes.length && !loading" class="kg-empty">
-          还没有星图。<br>点右上「⚗ 抽取缺失论文」，AI 会读论文自动建出知识网络。<br>
+          还没有知识关系图。<br>点右上「⚗ 抽取缺失论文」，系统会从已纳入论文建立知识网络。<br>
           <span class="muted">每篇论文几分钟；之后新导入的论文自动加入。</span>
         </div>
         <div class="kg-legend">
@@ -591,7 +564,7 @@ onBeforeUnmount(() => {
           <span class="lg-item"><i class="lg-line inf"></i>橙线 = AI 推断</span>
           <span class="lg-item"><i class="lg-line sim"></i>紫线 = 语义相似（不代表技术继承）</span>
         </div>
-        <div class="kg-tip">按知识类别分列 · 悬停查看关系 · 点击查看原文证据 · 滚轮缩放</div>
+        <div class="kg-tip">位置仅表示知识类别 · 悬停查看关系 · 点击查看原文证据</div>
       </div>
 
       <aside class="kg-panel">
@@ -667,6 +640,9 @@ onBeforeUnmount(() => {
 
         <!-- 同一对实体之间的多种关系：保留每条原始关系和证据入口 -->
         <template v-else-if="panel.kind === 'relationGroup'">
+          <div v-if="panel.failedCount" class="kg-partial-warning">
+            有 {{ panel.failedCount }} 条关系详情读取失败；其余已成功加载的关系仍可查看。
+          </div>
           <div class="p-head">
             <span class="badge">多重关系</span>
             <h3>这两个知识点之间有 {{ panel.relations.length }} 种关系</h3>
@@ -709,8 +685,8 @@ onBeforeUnmount(() => {
           <p><b>这张图怎么读</b></p>
           <ul>
             <li>节点按类别分列：论文、研究问题、算法、模型与概念、实验资源、研究发现等</li>
-            <li><b>悬停</b>任意星体：只点亮与它直接相关的连线，线上标出中文关系名和置信度</li>
-            <li><b>点击</b>星体或连线 → 右栏看详情和<b>论文原句证据</b>，可一键跳回原文位置</li>
+            <li><b>悬停</b>任意节点：只点亮与它直接相关的连线，线上标出中文关系名和置信度</li>
+            <li><b>点击</b>节点或连线 → 右栏看详情和<b>论文原句证据</b>，可一键跳回原文位置</li>
             <li><b>橙线</b> = AI 推断（论文没直说），<b>蓝线</b> = 论文原话，绝不混淆</li>
             <li>同一对节点存在多种关系时，画面合并连线但保留全部关系；点击连线可逐条查看证据</li>
             <li>滚轮缩放、拖动平移，用左侧搜索可以定位某个知识点</li>
@@ -724,192 +700,72 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.kg-page { display: flex; flex-direction: column; min-height: calc(100vh - 60px); }
-.kg-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
-.kg-actions { display: flex; gap: 8px; align-items: center; padding-top: 6px; }
-.kg-jobbar {
-  display: flex; align-items: center; gap: 10px; margin-top: 10px; padding: 7px 14px;
-  background: var(--accent-soft); border-radius: 8px; font-size: 13px; color: var(--accent);
-}
-.kg-jobbar .progressbar { width: 160px; }
-.kg-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 14px 0 10px; }
-.type-chips { display: flex; flex-wrap: wrap; gap: 5px; }
-.chip {
-  --c: #999; display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px;
-  border-radius: 14px; border: 1px solid var(--line); background: #fff; cursor: pointer;
-  font-size: 12px; color: var(--c); font-weight: 600;
-}
-.chip .cnt { color: var(--ink-3); font-weight: 400; }
-.chip.off { opacity: .38; filter: grayscale(.6); }
-.dust-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px;
-  color: var(--ink-2); cursor: pointer; user-select: none; }
-.dust-toggle .box { width: 14px; height: 14px; border-radius: 4px; border: 1px solid var(--line);
-  background: #fff; display: inline-block; }
-.dust-toggle .box.on { background: var(--accent); border-color: var(--accent); }
-.kg-body { display: flex; gap: 14px; flex: 1; min-height: 0; }
-.kg-topiclist { width: 230px; flex-shrink: 0; overflow: auto; }
-.topic-item { padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px;
-  margin-bottom: 8px; cursor: pointer; background: var(--panel); }
-.topic-item:hover { border-color: var(--accent); }
-.topic-item.on { border-color: var(--accent); background: var(--accent-soft); }
-.t-name { font-weight: 600; font-size: 13.5px; }
-.t-meta { font-size: 12px; color: var(--ink-3); margin-top: 2px; }
-
-/* ---- 深空画布 ---- */
-.kg-canvas-wrap { position: relative; flex: 1; min-width: 0; height: calc(100vh - 265px);
-  min-height: 460px; border-radius: 14px; overflow: hidden;
-  background: radial-gradient(ellipse at 50% 40%, #0e1c40 0%, #091026 48%, #040713 100%);
-  border: 1px solid #1d2c52; box-shadow: inset 0 0 160px rgba(16, 36, 88, .5); }
-#kg-canvas { position: absolute; inset: 0; z-index: 1; }
-/* 星云 + 星野（两层伪元素 + 一层实体 div） */
-.nebula { position: absolute; inset: 0; z-index: 0; pointer-events: none; background:
-  radial-gradient(420px 300px at 24% 30%, rgba(60, 110, 220, .14), transparent 70%),
-  radial-gradient(380px 280px at 74% 42%, rgba(150, 90, 220, .11), transparent 70%),
-  radial-gradient(400px 300px at 52% 78%, rgba(40, 170, 170, .10), transparent 70%); }
-.kg-canvas-wrap::before, .kg-canvas-wrap::after { content: ''; position: absolute; inset: 0;
-  pointer-events: none; z-index: 0; }
-.kg-canvas-wrap::before { background-image:
-  radial-gradient(1.2px 1.2px at 12% 22%, rgba(255,255,255,.9), transparent 60%),
-  radial-gradient(1px 1px at 38% 68%, rgba(255,255,255,.55), transparent 60%),
-  radial-gradient(1.4px 1.4px at 67% 18%, rgba(190,215,255,.85), transparent 60%),
-  radial-gradient(1px 1px at 82% 52%, rgba(255,255,255,.6), transparent 60%),
-  radial-gradient(1.1px 1.1px at 52% 84%, rgba(210,225,255,.7), transparent 60%),
-  radial-gradient(1px 1px at 8% 76%, rgba(255,255,255,.5), transparent 60%),
-  radial-gradient(1.3px 1.3px at 92% 82%, rgba(255,255,255,.7), transparent 60%),
-  radial-gradient(1px 1px at 27% 41%, rgba(255,255,255,.45), transparent 60%);
-  background-size: 520px 520px; }
-.kg-canvas-wrap::after { background-image:
-  radial-gradient(1px 1px at 18% 55%, rgba(160,190,255,.5), transparent 60%),
-  radial-gradient(1px 1px at 46% 12%, rgba(255,255,255,.5), transparent 60%),
-  radial-gradient(1px 1px at 73% 38%, rgba(180,205,255,.6), transparent 60%),
-  radial-gradient(1px 1px at 88% 12%, rgba(255,255,255,.45), transparent 60%),
-  radial-gradient(1px 1px at 33% 90%, rgba(200,220,255,.5), transparent 60%);
-  background-size: 340px 340px; opacity: .8; }
-.kg-loading { position: absolute; top: 12px; left: 16px; z-index: 2; font-size: 12px;
-  color: #8fa5d8; }
-.kg-empty { position: absolute; inset: 0; z-index: 2; display: flex; flex-direction: column;
-  align-items: center; justify-content: center; text-align: center; color: #c6d4f5;
-  line-height: 2; font-size: 14px; }
-.kg-legend { position: absolute; bottom: 12px; left: 14px; right: 14px; z-index: 2;
-  display: flex; flex-wrap: wrap; gap: 10px; font-size: 11.5px; color: #9db1dd;
-  pointer-events: none; }
-.lg-item { display: inline-flex; align-items: center; gap: 5px; }
-.lg-item i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
-.lg-line { width: 16px !important; height: 0 !important; border-radius: 0 !important;
-  border-top: 1.5px solid #3d5a94; }
-.lg-line.inf { border-top-color: #a8684d; }
-.lg-line.sim { border-top-color: #7862a8; }
-.kg-tip { position: absolute; top: 12px; right: 16px; z-index: 2; font-size: 12px;
-  color: #8fa5d8; background: rgba(10, 18, 38, .55); border: 1px solid #1d2c52;
-  padding: 4px 10px; border-radius: 12px; }
-
-/* ---- 右侧详情面板 ---- */
-.kg-panel { width: 360px; flex-shrink: 0; overflow: auto; background: #0d1530;
-  color: #dfe7ff; border: 1px solid #1d2c52; border-radius: 14px; padding: 16px; }
-.kg-panel-hint { font-size: 13px; line-height: 1.9; color: #b9c6e8; }
-.kg-panel-hint ul { margin: 6px 0; padding-left: 18px; }
-.kg-panel .muted { color: #7e90bd !important; }
-.p-head h3 { margin: 8px 0 6px; font-size: 16px; color: #f2f6ff; }
-.en-name { font-size: 12px; }
-.p-desc { font-size: 13px; color: #b9c6e8; margin: 6px 0; }
-.p-alias { font-size: 12.5px; color: #7e90bd; margin: 4px 0; }
-.p-sec { margin-top: 14px; }
-.p-sec h4 { margin: 0 0 8px; font-size: 13px; color: #7e90bd; font-weight: 600; }
-.rel-item { display: flex; justify-content: space-between; gap: 8px; align-items: center;
-  padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 12.8px; }
-.rel-item:hover { background: rgba(110, 140, 220, .12); }
-.rel-dir { flex: 1; min-width: 0; }
-.rel-type { color: #8fb4ff; font-size: 11px; padding: 0 3px; font-weight: 700; }
-.rel-type.inf { color: #ffb08a; }
-.ev-warn { color: #ffb08a; }
-.ev-item { border-left: 3px solid #24345e; padding: 6px 10px; margin-bottom: 10px; }
-.ev-meta { font-size: 12px; color: #7e90bd; display: flex; gap: 6px; flex-wrap: wrap; }
-.ev-paper { color: #c3d0f0; font-weight: 600; }
-.ev-badge { padding: 0 6px; border-radius: 8px; background: rgba(110, 140, 220, .18);
-  color: #8fb4ff; font-size: 11px; }
-.ev-badge.inferred { background: rgba(255, 150, 100, .15); color: #ffb08a; }
-.ev-text { font-size: 12.8px; color: #e6ecfb; margin: 4px 0; line-height: 1.6; }
-.ev-jump { font-size: 12px; color: #8fb4ff !important; }
-.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: var(--panel); }
-.seg button { border: 0; background: transparent; padding: 6px 14px; font-size: 13px; cursor: pointer; color: var(--ink-2); }
-.seg button.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
-.progressbar { height: 6px; border-radius: 4px; background: #e5e3dc; overflow: hidden; }
-.progressbar > div { height: 100%; background: var(--accent); transition: width .4s; }
-.muted { color: var(--ink-3); }
-
-
-/* Research-first overview: the graph remains available as an advanced exploration view. */
-.kg-overview { display:flex; flex-direction:column; gap:16px; padding:18px 0 28px; color:var(--text, #202938); }
-.kg-metrics { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; }
-.kg-metric, .kg-overview-card { background:var(--card, #fff); border:1px solid var(--line, #e5e9ef); border-radius:12px; }
-.kg-metric { padding:16px 18px; display:flex; flex-direction:column; gap:5px; }
-.kg-metric span { color:var(--muted, #77808e); font-size:12px; }
-.kg-metric strong { font-size:28px; line-height:1.2; font-weight:700; color:var(--text, #202938); }
-.kg-metric small, .kg-overview-topic small, .kg-paper-title small { color:var(--muted, #77808e); font-size:11px; }
-.kg-overview-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
-.kg-overview-card { padding:16px; min-width:0; }
-.kg-card-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
-.kg-card-head h3 { margin:0; font-size:15px; font-weight:700; }
-.kg-card-head p { margin:5px 0 0; font-size:12px; }
-.kg-overview-topic { width:100%; border:0; border-top:1px solid var(--line, #e5e9ef); background:transparent; padding:12px 2px; display:flex; align-items:center; justify-content:space-between; text-align:left; color:inherit; cursor:pointer; }
-.kg-overview-topic:hover { background:var(--hover, #f7f9fc); }
-.kg-overview-topic span:first-child { display:flex; flex-direction:column; gap:4px; }
-.kg-overview-topic span:last-child { font-size:20px; color:var(--muted, #77808e); }
-.kg-resource-row { display:flex; justify-content:space-between; gap:10px; padding:11px 2px; border-top:1px solid var(--line, #e5e9ef); font-size:13px; }
-.kg-resource-row span { color:var(--muted, #77808e); font-size:12px; }
-.kg-paper-audit { padding-bottom:8px; }
-.kg-paper-row { display:flex; align-items:center; justify-content:space-between; gap:16px; border-top:1px solid var(--line, #e5e9ef); padding:10px 2px; }
-.kg-paper-title { min-width:0; display:flex; flex-direction:column; gap:3px; }
-.kg-paper-title b { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; }
-.kg-scope-select { width:190px; flex:none; }
-.kg-review-flag { color:#a15b19 !important; }
-@media (max-width:900px) {
-  .kg-metrics { grid-template-columns:repeat(2,minmax(0,1fr)); }
-  .kg-overview-grid { grid-template-columns:1fr; }
-}
-@media (max-width:600px) {
-  .kg-paper-row { align-items:flex-start; flex-direction:column; }
-  .kg-scope-select { width:100%; }
-}
-
-
-/* Clean research workspace: remove decorative galaxy effects and prioritize legibility. */
-.kg-canvas-wrap {
-  background:
-    linear-gradient(rgba(94,116,142,.045) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(94,116,142,.045) 1px, transparent 1px),
-    linear-gradient(180deg,#fbfcfe 0%,#f4f7fb 100%);
-  background-size:32px 32px,32px 32px,auto;
-  border:1px solid #d8e1eb;
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.9),0 8px 24px rgba(35,55,80,.06);
-}
-.nebula,.kg-canvas-wrap::before,.kg-canvas-wrap::after { display:none !important; }
-.kg-panel {
-  background:#fff;
-  color:#253449;
-  border:1px solid #dbe3ec;
-  box-shadow:0 8px 24px rgba(35,55,80,.06);
-}
-.kg-panel .muted { color:#718096 !important; }
-.p-head h3 { color:#1e293b; }
-.p-desc { color:#526174; }
-.p-alias { color:#718096; }
-.p-sec h4 { color:#68788c; }
-.rel-item { color:#334155; }
-.rel-item:hover { background:#f1f5f9; }
-.ev-item { border-left-color:#8ca5bf; background:#f8fafc; border-radius:0 7px 7px 0; }
-.ev-meta { color:#718096; }
-.ev-paper { color:#334b66; }
-.ev-text { color:#334155; }
-.ev-jump { color:#315f8b !important; }
-.kg-legend { color:#526174; background:rgba(255,255,255,.9); border:1px solid #dbe3ec; border-radius:8px; padding:7px 10px; }
-.kg-tip { color:#526174; background:rgba(255,255,255,.94); border:1px solid #dbe3ec; }
-.lg-line { border-top-color:#6887a8; }
-.lg-line.inf { border-top-color:#c47a43; }
-.lg-line.sim { border-top-color:#8064a9; }
-.relation-group-item { border:1px solid #e5ebf2; border-radius:8px; margin:8px 0; padding:12px; }
-.relation-group-item small { display:block; color:#718096; margin-top:4px; }
-.relation-group-item > span:last-child { color:#42698f; font-size:12px; white-space:nowrap; }
-.kg-panel-hint { color:#526174; }
-
+.kg-page{display:flex;flex-direction:column;min-height:calc(100vh - 60px);color:var(--text,#253449)}
+.kg-head{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}
+.kg-actions{display:flex;gap:8px;align-items:center;padding-top:6px}
+.kg-jobbar{display:flex;align-items:center;gap:10px;margin-top:10px;padding:7px 14px;background:var(--accent-soft);border-radius:8px;font-size:13px;color:var(--accent)}
+.kg-jobbar .progressbar{width:160px}
+.kg-toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:14px 0 10px}
+.type-chips{display:flex;flex-wrap:wrap;gap:5px}
+.chip{--c:#999;display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:14px;border:1px solid var(--line);background:#fff;cursor:pointer;font-size:12px;color:var(--c);font-weight:600}
+.chip .cnt{color:var(--ink-3);font-weight:400}.chip.off{opacity:.38;filter:grayscale(.6)}
+.dust-toggle{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink-2);cursor:pointer;user-select:none}
+.dust-toggle .box{width:14px;height:14px;border-radius:4px;border:1px solid var(--line);background:#fff;display:inline-block}
+.dust-toggle .box.on{background:var(--accent);border-color:var(--accent)}
+.kg-body{display:flex;gap:14px;flex:1;min-height:0}
+.kg-topiclist{width:230px;flex-shrink:0;overflow:auto}
+.topic-item{padding:10px 12px;border:1px solid var(--line);border-radius:8px;margin-bottom:8px;cursor:pointer;background:var(--panel)}
+.topic-item:hover,.topic-item.on{border-color:var(--accent)}.topic-item.on{background:var(--accent-soft)}
+.t-name{font-weight:600;font-size:13.5px}.t-meta{font-size:12px;color:var(--ink-3);margin-top:2px}
+.kg-canvas-wrap{position:relative;flex:1;min-width:0;height:calc(100vh - 265px);min-height:460px;border-radius:12px;overflow:hidden;background:linear-gradient(rgba(94,116,142,.045) 1px,transparent 1px),linear-gradient(90deg,rgba(94,116,142,.045) 1px,transparent 1px),linear-gradient(180deg,#fbfcfe 0%,#f4f7fb 100%);background-size:32px 32px,32px 32px,auto;border:1px solid #d8e1eb;box-shadow:inset 0 1px 0 rgba(255,255,255,.9),0 8px 24px rgba(35,55,80,.06)}
+#kg-canvas{position:absolute;inset:0;z-index:1}
+.kg-canvas-controls{position:absolute;top:10px;right:12px;z-index:3;display:flex;gap:6px}
+.kg-canvas-controls .btn{background:rgba(255,255,255,.96);border:1px solid #d8e1eb;color:#334155;box-shadow:0 1px 3px rgba(35,55,80,.08)}
+.kg-loading{position:absolute;top:12px;left:16px;z-index:2;font-size:12px;color:#526174;background:rgba(255,255,255,.92);padding:4px 8px;border-radius:6px}
+.kg-empty{position:absolute;inset:0;z-index:2;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;color:#526174;line-height:2;font-size:14px;padding:24px}
+.kg-legend{position:absolute;bottom:12px;left:14px;right:14px;z-index:2;display:flex;flex-wrap:wrap;gap:10px;font-size:11.5px;color:#526174;background:rgba(255,255,255,.94);border:1px solid #dbe3ec;border-radius:8px;padding:7px 10px;pointer-events:none}
+.lg-item{display:inline-flex;align-items:center;gap:5px}.lg-item i{width:10px;height:10px;border-radius:50%;display:inline-block}
+.lg-line{width:16px!important;height:0!important;border-radius:0!important;border-top:1.5px solid #6887a8}
+.lg-line.inf{border-top-color:#c47a43}.lg-line.sim{border-top-color:#8064a9}
+.kg-tip{position:absolute;top:48px;left:16px;z-index:2;font-size:12px;color:#526174;background:rgba(255,255,255,.94);border:1px solid #dbe3ec;padding:4px 10px;border-radius:12px;pointer-events:none}
+.kg-panel{width:360px;flex-shrink:0;overflow:auto;background:#fff;color:#253449;border:1px solid #dbe3ec;border-radius:12px;padding:16px;box-shadow:0 8px 24px rgba(35,55,80,.06)}
+.kg-panel-hint{font-size:13px;line-height:1.9;color:#526174}.kg-panel-hint ul{margin:6px 0;padding-left:18px}
+.kg-panel .muted{color:#718096!important}.p-head h3{margin:8px 0 6px;font-size:16px;color:#1e293b}
+.en-name{font-size:12px}.p-desc{font-size:13px;color:#526174;margin:6px 0}.p-alias{font-size:12.5px;color:#718096;margin:4px 0}
+.p-sec{margin-top:14px}.p-sec h4{margin:0 0 8px;font-size:13px;color:#68788c;font-weight:600}
+.rel-item{display:flex;justify-content:space-between;gap:8px;align-items:center;padding:8px;border-radius:7px;cursor:pointer;font-size:12.8px;color:#334155}
+.rel-item:hover{background:#f1f5f9}.rel-dir{flex:1;min-width:0}.rel-type{color:#315f8b;font-size:11px;padding:0 3px;font-weight:700}.rel-type.inf{color:#b65d36}
+.ev-warn{color:#b65d36}.ev-item{border-left:3px solid #8ca5bf;background:#f8fafc;border-radius:0 7px 7px 0;padding:8px 10px;margin-bottom:10px}
+.ev-meta{font-size:12px;color:#718096;display:flex;gap:6px;flex-wrap:wrap}.ev-paper{color:#334b66;font-weight:600}
+.ev-badge{padding:0 6px;border-radius:8px;background:#eaf1f8;color:#315f8b;font-size:11px}.ev-badge.inferred{background:#fff1e8;color:#a85a32}
+.ev-text{font-size:12.8px;color:#334155;margin:4px 0;line-height:1.6}.ev-jump{font-size:12px;color:#315f8b!important}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--panel)}
+.seg button{border:0;background:transparent;padding:6px 14px;font-size:13px;cursor:pointer;color:var(--ink-2)}
+.seg button.on{background:var(--accent-soft);color:var(--accent);font-weight:600}
+.progressbar{height:6px;border-radius:4px;background:#e5e3dc;overflow:hidden}.progressbar>div{height:100%;background:var(--accent);transition:width .4s}
+.muted{color:var(--ink-3)}
+.kg-overview{display:flex;flex-direction:column;gap:16px;padding:18px 0 28px;color:var(--text,#202938)}
+.kg-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.kg-metric,.kg-overview-card{background:var(--card,#fff);border:1px solid var(--line,#e5e9ef);border-radius:12px}
+.kg-metric{padding:16px 18px;display:flex;flex-direction:column;gap:5px}.kg-metric span{color:var(--muted,#77808e);font-size:12px}
+.kg-metric strong{font-size:28px;line-height:1.2;font-weight:700;color:var(--text,#202938)}
+.kg-metric small,.kg-overview-topic small,.kg-paper-title small{color:var(--muted,#77808e);font-size:11px}
+.kg-overview-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.kg-overview-card{padding:16px;min-width:0}
+.kg-card-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
+.kg-card-head h3{margin:0;font-size:15px;font-weight:700}.kg-card-head p{margin:5px 0 0;font-size:12px}
+.kg-overview-topic{width:100%;border:0;border-top:1px solid var(--line,#e5e9ef);background:transparent;padding:12px 2px;display:flex;align-items:center;justify-content:space-between;text-align:left;color:inherit;cursor:pointer}
+.kg-overview-topic:hover{background:var(--hover,#f7f9fc)}.kg-overview-topic span:first-child{display:flex;flex-direction:column;gap:4px}
+.kg-overview-topic span:last-child{font-size:20px;color:var(--muted,#77808e)}
+.kg-resource-row{display:flex;justify-content:space-between;gap:10px;padding:11px 2px;border-top:1px solid var(--line,#e5e9ef);font-size:13px}
+.kg-resource-row span{color:var(--muted,#77808e);font-size:12px}.kg-paper-audit{padding-bottom:8px}
+.kg-paper-row{display:flex;align-items:center;justify-content:space-between;gap:16px;border-top:1px solid var(--line,#e5e9ef);padding:10px 2px}
+.kg-paper-title{min-width:0;display:flex;flex-direction:column;gap:3px}
+.kg-paper-title b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+.kg-scope-select{width:190px;flex:none}.kg-review-flag{color:#a15b19!important}
+.relation-group-item{border:1px solid #e5ebf2;border-radius:8px;margin:8px 0;padding:12px}
+.relation-group-item small{display:block;color:#718096;margin-top:4px}
+.kg-partial-warning{padding:8px 10px;border:1px solid #f0d6a8;background:#fff8e8;color:#8a5a16;border-radius:7px;font-size:12px}
+@media(max-width:1100px){.kg-body{flex-wrap:wrap}.kg-canvas-wrap{flex-basis:100%;order:1}.kg-topiclist{width:100%;max-height:180px;order:0}.kg-panel{width:100%;max-height:420px;order:2}}
+@media(max-width:900px){.kg-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.kg-overview-grid{grid-template-columns:1fr}}
+@media(max-width:600px){.kg-head{flex-direction:column}.kg-actions{width:100%;flex-wrap:wrap}.kg-paper-row{align-items:flex-start;flex-direction:column}.kg-scope-select{width:100%}.kg-canvas-wrap{min-height:380px;height:55vh}.kg-legend{bottom:8px;left:8px;right:8px;gap:6px;font-size:10px}.kg-tip{display:none}.kg-canvas-controls{top:8px;right:8px}}
 </style>
