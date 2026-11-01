@@ -69,19 +69,23 @@ let hoveredNode = null
 let hoveredNeighbors = new Set()
 let hoveredEdge = null
 let focusNode = ''
+let layoutBounds = null
 
 function fitCamera({ full = false, duration = 250 } = {}) {
   if (!renderer || !graph || !graph.order) return
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
-  graph.forEachNode((n, attr) => {
-    minX = Math.min(minX, attr.x); maxX = Math.max(maxX, attr.x)
-    minY = Math.min(minY, attr.y); maxY = Math.max(maxY, attr.y)
-  })
   const el = renderer.getContainer()
+  const fitBounds = layoutBounds || (() => {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    graph.forEachNode((n, attr) => {
+      minX = Math.min(minX, attr.x); maxX = Math.max(maxX, attr.x)
+      minY = Math.min(minY, attr.y); maxY = Math.max(maxY, attr.y)
+    })
+    return { minX, maxX, minY, maxY }
+  })()
   const fit = computeCameraFit(
-    { minX, maxX, minY, maxY },
+    fitBounds,
     { width: el.clientWidth || 1200, height: el.clientHeight || 700 },
-    { padding: 110, minRatio: 0.06, maxRatio: 40 },
+    { padding: 90, minRatio: 0.06, maxRatio: 40 },
   )
   // 默认视图优先保持节点可辨；“适配全图”按钮完整适配整个边界框。
   const ratio = full ? fit.ratio : Math.min(fit.ratio, 1.6)
@@ -98,14 +102,7 @@ function renderGraph(data) {
   edgeCount.value = shownEdges.length
   const layout = computeSemanticLayout(visible)
   const pos = layout.positions
-  window.__kgLastRender = {
-    nodes: visible.length, edges: shownEdges.length,
-    graphOrder: graph.order, graphSize: graph.size,
-    sample: visible[0] ? { id: visible[0].id, x: pos[visible[0].id]?.x, y: pos[visible[0].id]?.y } : null,
-    lanes: layout.lanes,
-    bounds: layout.bounds,
-    t: new Date().toISOString().slice(17, 23),
-  }
+  layoutBounds = layout.bounds
 
   hoveredNode = null
   hoveredNeighbors = new Set()
@@ -141,6 +138,15 @@ function renderGraph(data) {
       _rids: relations.map(e => e.id),
       _relationCount: relations.length,
     })
+  }
+  // Expose the completed layout (not the previous graph state) for acceptance diagnostics.
+  window.__kgLastRender = {
+    nodes: visible.length, edges: shownEdges.length,
+    graphOrder: graph.order, graphSize: graph.size,
+    sample: visible[0] ? { id: visible[0].id, x: pos[visible[0].id]?.x, y: pos[visible[0].id]?.y } : null,
+    lanes: layout.lanes,
+    bounds: layout.bounds,
+    t: new Date().toISOString().slice(17, 23),
   }
   fitCamera({ full: false, duration: focusNode ? 0 : 250 })
   if (focusNode && graph.hasNode(focusNode)) {
