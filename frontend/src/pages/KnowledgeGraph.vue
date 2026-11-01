@@ -30,6 +30,8 @@ const job = ref(null)
 const jobsTimer = ref(null)
 const nodeCount = ref(0)
 const edgeCount = ref(0)
+// Evidence list is the default because users need to understand claims before exploring topology.
+const explorerMode = ref('evidence')
 
 const REL_ZH = {
   PROPOSES: '提出', ADDRESSES: '针对问题', USES: '使用', USES_METRIC: '评测指标',
@@ -60,6 +62,23 @@ const EVIDENCE_OPTIONS = [
   { value: 'inferred', label: 'AI 推断' },
   { value: 'similarity', label: '语义相似' },
 ]
+
+const relationRows = computed(() => {
+  const nodes = new Map((graphData.value?.nodes || []).map(n => [n.id, n]))
+  return (graphData.value?.edges || []).map(edge => {
+    const source = nodes.get(edge.source)
+    const target = nodes.get(edge.target)
+    return {
+      ...edge,
+      sourceLabel: source?.label_zh || source?.label || edge.source,
+      targetLabel: target?.label_zh || target?.label || edge.target,
+      relationLabel: REL_ZH[edge.relation_type] || edge.relation_type,
+      evidencePaperTitle: papers.value.find(p => p.id === edge.evidence_paper_id)?.title_zh
+        || papers.value.find(p => p.id === edge.evidence_paper_id)?.title || '来源论文',
+    }
+  }).sort((a, b) => (Number(b.confidence) || 0) - (Number(a.confidence) || 0)
+    || (Number(b.evidence_count) || 0) - (Number(a.evidence_count) || 0))
+})
 
 const presentTypes = computed(() => {
   if (!overview.value) return []
@@ -112,12 +131,14 @@ function fitCamera({ full = false, duration = 250 } = {}) {
 
 function renderGraph(data) {
   graphData.value = data
-  ensureRenderer()
   const visible = data.nodes.filter(n => showDust.value || n.degree > 0 || n.is_library_paper)
   const keep = new Set(visible.map(n => n.id))
   const shownEdges = data.edges.filter(e => keep.has(e.source) && keep.has(e.target))
   nodeCount.value = visible.length
   edgeCount.value = shownEdges.length
+  // Do not instantiate WebGL for the evidence-first list view; Sigma needs a visible canvas.
+  if (explorerMode.value !== 'graph') return
+  ensureRenderer()
   const layout = computeSemanticLayout(visible)
   const pos = layout.positions
   layoutBounds = layout.bounds
@@ -213,6 +234,14 @@ function toggleType(t) {
   s.has(t) ? s.delete(t) : s.add(t)
   activeTypes.value = s
   loadGraph()
+}
+
+async function setExplorerMode(mode) {
+  explorerMode.value = mode
+  if (mode === 'graph' && graphData.value) {
+    await nextTick()
+    renderGraph(graphData.value)
+  }
 }
 
 function toggleEvidenceType(type) {
@@ -533,6 +562,13 @@ onBeforeUnmount(() => {
       <span>{{ job.progress }}%</span>
     </div>
 
+    <div v-if="view !== 'overview'" class="kg-modebar">
+      <span>关系呈现：</span>
+      <button class="btn sm" :class="{ primary: explorerMode === 'evidence' }" @click="setExplorerMode('evidence')">证据清单</button>
+      <button class="btn sm" :class="{ primary: explorerMode === 'graph' }" @click="setExplorerMode('graph')">关系图</button>
+      <span class="kg-modehint">先读关系与原文依据，再按需查看网络结构</span>
+    </div>
+
     <div v-if="view === 'global'" class="kg-toolbar">
       <select class="select" v-model="selPaper" @change="q = ''; loadGraph()" style="max-width:300px">
         <option value="">全部论文（星系全景）</option>
@@ -610,7 +646,22 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <div class="kg-canvas-wrap">
+      <section v-if="explorerMode === 'evidence'" class="kg-evidence-list">
+        <header class="kg-evidence-head">
+          <div><h3>可追溯关系</h3><p>每一项都能打开原文证据。默认仅列出论文原文明示的关系，不把 AI 推测当成事实。</p></div>
+          <strong>{{ relationRows.length }} 条</strong>
+        </header>
+        <div v-if="!relationRows.length" class="kg-evidence-empty">
+          当前筛选条件下没有可展示的原文明示关系。可以切换论文、调整类型，或在证据筛选中单独开启 AI 推断。
+        </div>
+        <button v-for="edge in relationRows" :key="edge.id" class="kg-evidence-row" @click="openRelation(edge.id)">
+          <div class="kg-evidence-triple"><b>{{ edge.sourceLabel }}</b><span>{{ edge.relationLabel }} →</span><b>{{ edge.targetLabel }}</b></div>
+          <p class="kg-evidence-quote">“{{ edge.evidence_text || '该关系暂无可显示的原文摘录，请打开详情核验。' }}”</p>
+          <div class="kg-evidence-meta"><span>{{ edge.evidencePaperTitle }}</span><span v-if="edge.section_name">{{ edge.section_name }}</span><span>{{ edge.evidence_count }} 条证据</span><span>置信度 {{ Math.round((edge.confidence || 0) * 100) }}%</span><span class="kg-open-detail">查看证据 ›</span></div>
+        </button>
+      </section>
+
+      <div v-show="explorerMode === 'graph'" class="kg-canvas-wrap">
         <div class="kg-canvas-controls">
           <button class="btn sm" type="button" @click="fitCamera({ full: true })">适配全图</button>
           <button class="btn sm" type="button" @click="fitCamera({ full: false })">可读视图</button>
@@ -781,6 +832,22 @@ onBeforeUnmount(() => {
 .dust-toggle .box{width:14px;height:14px;border-radius:4px;border:1px solid var(--line);background:#fff;display:inline-block}
 .dust-toggle .box.on{background:var(--accent);border-color:var(--accent)}
 .kg-body{display:flex;gap:14px;flex:1;min-height:0}
+.kg-modebar{display:flex;align-items:center;gap:8px;margin:6px 0 10px;color:#526174;font-size:12px}
+.kg-modehint{margin-left:6px;color:#718096}
+.kg-evidence-list{flex:1;min-width:0;max-height:calc(100vh - 265px);min-height:460px;overflow:auto;background:#fff;border:1px solid #d8e1eb;border-radius:12px;padding:14px;box-shadow:0 8px 24px rgba(35,55,80,.05)}
+.kg-evidence-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:2px 4px 12px;border-bottom:1px solid #e7edf3}
+.kg-evidence-head h3{margin:0 0 4px;font-size:15px;color:#24364b}
+.kg-evidence-head p{margin:0;color:#718096;font-size:12px;line-height:1.6}
+.kg-evidence-head strong{white-space:nowrap;color:#315f8b}
+.kg-evidence-row{display:block;width:100%;text-align:left;border:0;border-bottom:1px solid #edf1f5;background:#fff;padding:13px 8px;cursor:pointer;color:#334155}
+.kg-evidence-row:hover{background:#f7f9fc}
+.kg-evidence-triple{display:flex;align-items:center;flex-wrap:wrap;gap:7px;font-size:13px}
+.kg-evidence-triple b{color:#203c59}
+.kg-evidence-triple span{color:#47769b;font-size:12px;font-weight:700}
+.kg-evidence-quote{margin:7px 0;color:#526174;font-size:12.5px;line-height:1.65}
+.kg-evidence-meta{display:flex;flex-wrap:wrap;gap:6px 12px;color:#8190a2;font-size:11px}
+.kg-open-detail{margin-left:auto;color:#315f8b;font-weight:600}
+.kg-evidence-empty{padding:36px 12px;text-align:center;color:#718096;font-size:13px}
 .kg-topiclist{width:230px;flex-shrink:0;overflow:auto}
 .topic-item{padding:10px 12px;border:1px solid var(--line);border-radius:8px;margin-bottom:8px;cursor:pointer;background:var(--panel)}
 .topic-item:hover,.topic-item.on{border-color:var(--accent)}.topic-item.on{background:var(--accent-soft)}
