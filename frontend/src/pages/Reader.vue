@@ -482,11 +482,16 @@ onMounted(async () => {
   document.addEventListener('mouseup', onMouseUp)
   try { await loadAll() } catch (e) { toast('加载失败：' + e.message, 'err') }
   if (ACTIVE.has(paper.value?.status)) startPoll()
-  // 从知识图谱「定位原文」跳转进来：滚动到证据所在块
+  // 从知识图谱「定位原文」跳转进来：滚动到证据所在块。
+  // 深链用瞬时定位——容器 CSS 是 scroll-behavior:smooth，平滑动画在
+  // 隐藏/后台标签页会被丢弃，且跨几千像素的平滑飞行体验也差。
   const bid = route.query.block
   if (bid) {
     await nextTick()
-    setTimeout(() => scrollToBlock(bid), 350)
+    setTimeout(() => {
+      contentRef.value?.querySelector(`[data-block-id="${bid}"]`)
+        ?.scrollIntoView({ block: 'center', behavior: 'instant' })
+    }, 350)
   }
 })
 onBeforeUnmount(() => {
