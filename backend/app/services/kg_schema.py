@@ -197,6 +197,13 @@ def validate_extraction(data: dict, block_map: dict[int, str], paper_title: str 
                     f"“{item.evidence_text[:60]}”")
                 continue
             block_id = hit
+        # The extraction pipeline is deliberately evidence-first: an exact quote is
+        # necessary but not sufficient to prove a semantic relation. Do not persist
+        # model-inferred claims as if they were source-asserted facts.
+        if item.evidence_type != "explicit":
+            warnings.append(
+                f"关系不是原文明示（{item.evidence_type}），仅作为推测不入库：{src}→{tgt}")
+            continue
         item.source, item.target = src, tgt
         item.evidence_block_id = block_id
         if item.evidence_type not in EVIDENCE_TYPES:
