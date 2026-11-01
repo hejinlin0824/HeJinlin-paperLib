@@ -36,7 +36,7 @@ set "BACKEND_READY=.venv\.paperlib-backend-ready"
 set "REQ_TIME="
 set "STAMP_TIME="
 for %%I in (backend\requirements.txt) do set "REQ_TIME=%%~tI"
-if exist "%BACKEND_READY%" for %%I in ("%BACKEND_READY%") do set "STAMP_TIME=%%~tI"
+if exist "%BACKEND_READY%" set /p STAMP_TIME=<"%BACKEND_READY%"
 if "%REQ_TIME%"=="%STAMP_TIME%" (
   ".venv\Scripts\python.exe" -c "import fastapi, uvicorn, httpx, fitz, multipart" >nul 2>&1
   if not errorlevel 1 (
@@ -49,7 +49,7 @@ if "%REQ_TIME%"=="%STAMP_TIME%" (
 echo [2/5] Installing/checking backend dependencies...
 ".venv\Scripts\python.exe" -m pip install -q --disable-pip-version-check -r backend\requirements.txt
 if errorlevel 1 goto :err_backend_deps
-type nul > "%BACKEND_READY%"
+> "%BACKEND_READY%" echo %REQ_TIME%
 
 :backend_deps_ready
 rem 4) Ensure frontend dependencies exist, then ALWAYS build the production frontend.
