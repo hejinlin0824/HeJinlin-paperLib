@@ -524,3 +524,17 @@ def test_relation_trust_summary_recomputed_after_reextraction(kg_db):
     relation = app_db.row("SELECT * FROM kg_relations WHERE id=?", (relation["id"],))
     assert relation["evidence_type"] == "inferred"
     assert relation["confidence"] == pytest.approx(0.7)
+
+
+def test_schema_rejects_inferred_relation_even_when_quote_exists(kg_db):
+    data = dict(LLM_GOOD)
+    data["entities"] = list(LLM_GOOD["entities"])
+    data["relations"] = [dict(item) for item in LLM_GOOD["relations"]]
+    data["relations"][1]["evidence_type"] = "inferred"
+    block_map = {i + 1: t for i, t in enumerate(BLOCKS)}
+
+    entities, relations, warnings = kg_schema.validate_extraction(data, block_map, "")
+
+    assert entities
+    assert all(r.relation_type != "MITIGATES" for r in relations)
+    assert any("不是原文明示" in warning for warning in warnings)
