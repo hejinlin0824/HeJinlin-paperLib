@@ -33,6 +33,8 @@ const edgeCount = ref(0)
 // Evidence list is the default because users need to understand claims before exploring topology.
 const explorerMode = ref('evidence')
 const showRejected = ref(false)
+const focusEntityId = ref('')
+const focusEntityLabel = ref('')
 
 const REL_ZH = {
   PROPOSES: '提出', ADDRESSES: '针对问题', USES: '使用', USES_METRIC: '评测指标',
@@ -210,7 +212,8 @@ async function loadGraph() {
     // A newer filter/view action may have started while Vue was updating the DOM.
     if (requestId !== graphRequestSequence || view.value !== 'global') return
     const params = {}
-    if (selPaper.value) params.paper_id = selPaper.value
+    if (focusEntityId.value) params.focus_entity_id = focusEntityId.value
+    else if (selPaper.value) params.paper_id = selPaper.value
     else if (q.value.trim()) params.q = q.value.trim()
     const ts = [...activeTypes.value]
     if (ts.length) params.types = ts.join(',')
@@ -229,6 +232,22 @@ async function loadGraph() {
   } finally {
     if (requestId === graphRequestSequence) loading.value = false
   }
+}
+
+async function focusOnEntity(entity) {
+  focusEntityId.value = entity.id
+  focusEntityLabel.value = zhName(entity)
+  selPaper.value = ''
+  q.value = ''
+  explorerMode.value = 'graph'
+  await nextTick()
+  loadGraph()
+}
+
+function clearGraphFocus() {
+  focusEntityId.value = ''
+  focusEntityLabel.value = ''
+  loadGraph()
 }
 
 function toggleType(t) {
@@ -599,14 +618,16 @@ onBeforeUnmount(() => {
       <button class="btn sm" :class="{ primary: explorerMode === 'evidence' }" @click="setExplorerMode('evidence')">证据清单</button>
       <button class="btn sm" :class="{ primary: explorerMode === 'graph' }" @click="setExplorerMode('graph')">关系图</button>
       <span class="kg-modehint">先核验每条关系是否被引文支持，再按需查看网络结构</span>
+      <span v-if="focusEntityId" class="kg-focus-label">局部一跳：{{ focusEntityLabel }}</span>
+      <button v-if="focusEntityId" class="btn sm" @click="clearGraphFocus">返回全库关系</button>
       <button class="btn sm" :class="{ primary: showRejected }" @click="showRejected = !showRejected; refreshCurrentGraph()">
         {{ showRejected ? '隐藏已驳回' : '显示已驳回' }}
       </button>
     </div>
 
     <div v-if="view === 'global'" class="kg-toolbar">
-      <select class="select" v-model="selPaper" @change="q = ''; loadGraph()" style="max-width:300px">
-        <option value="">全部论文（星系全景）</option>
+      <select class="select" v-model="selPaper" @change="q = ''; focusEntityId = ''; focusEntityLabel = ''; loadGraph()" style="max-width:300px">
+        <option value="">全部论文（全库关系）</option>
         <option v-for="p in papers" :key="p.id" :value="p.id">
           只看：{{ p.title_zh || p.title }}
         </option>
@@ -737,6 +758,7 @@ onBeforeUnmount(() => {
             <router-link v-if="panel.d.library_paper_id" class="btn sm" :to="readerUrl(panel.d.library_paper_id)">
               ↗ 打开这篇论文
             </router-link>
+            <button v-if="view === 'global'" class="btn sm" @click="focusOnEntity(panel.d)">围绕此知识点展开一跳关系</button>
           </div>
           <p v-if="panel.d.description" class="p-desc">{{ panel.d.description }}</p>
           <p v-if="panel.d.aliases.length" class="p-alias">别名：{{ panel.d.aliases.join('、') }}</p>
@@ -878,6 +900,7 @@ onBeforeUnmount(() => {
 .kg-body{display:flex;gap:14px;flex:1;min-height:0}
 .kg-modebar{display:flex;align-items:center;gap:8px;margin:6px 0 10px;color:#526174;font-size:12px}
 .kg-modehint{margin-left:6px;color:#718096}
+.kg-focus-label{font-size:12px;color:#315f8b;background:#eef5fb;border:1px solid #d5e4f1;border-radius:12px;padding:4px 9px}
 .kg-evidence-list{flex:1;min-width:0;max-height:calc(100vh - 265px);min-height:460px;overflow:auto;background:#fff;border:1px solid #d8e1eb;border-radius:12px;padding:14px;box-shadow:0 8px 24px rgba(35,55,80,.05)}
 .kg-evidence-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:2px 4px 12px;border-bottom:1px solid #e7edf3}
 .kg-evidence-head h3{margin:0 0 4px;font-size:15px;color:#24364b}
