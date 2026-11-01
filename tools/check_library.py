@@ -83,6 +83,10 @@ def inspect_library(root: Path = ROOT) -> dict:
 
 
 def main() -> int:
+    # Windows consoles may use cp1252/cp936; never let diagnostic text crash startup.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="backslashreplace")
     report = inspect_library()
     print(json.dumps(report, ensure_ascii=False, indent=2))
     if not report["safe_to_start"]:
