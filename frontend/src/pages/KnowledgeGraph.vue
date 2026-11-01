@@ -16,6 +16,8 @@ const view = ref('overview')
 const selPaper = ref('')
 const q = ref('')
 const activeTypes = ref(new Set())
+// Only relations explicitly supported by source text are visible by default.
+const activeEvidenceTypes = ref(new Set(['explicit']))
 const selRelation = ref('')
 const showDust = ref(false)
 const graphData = ref(null)
@@ -52,7 +54,12 @@ const TYPE_STYLE = {
   Task: { color: '#587ca5', zh: '任务' },
   Institution: { color: '#718096', zh: '机构' },
 }
-const EVI_LABEL = { explicit: '原文', inferred: '推断', similarity: '相似' }
+const EVI_LABEL = { explicit: '原文明示', inferred: 'AI 推断', similarity: '语义相似' }
+const EVIDENCE_OPTIONS = [
+  { value: 'explicit', label: '原文明示' },
+  { value: 'inferred', label: 'AI 推断' },
+  { value: 'similarity', label: '语义相似' },
+]
 
 const presentTypes = computed(() => {
   if (!overview.value) return []
@@ -186,6 +193,7 @@ async function loadGraph() {
     const ts = [...activeTypes.value]
     if (ts.length) params.types = ts.join(',')
     if (selRelation.value) params.relation_types = selRelation.value
+    params.evidence_types = [...activeEvidenceTypes.value].join(',')
 
     const data = await api.kgGraph(params)
     // Never let a slower, stale response replace the latest graph with old/empty data.
@@ -204,6 +212,18 @@ function toggleType(t) {
   const s = new Set(activeTypes.value)
   s.has(t) ? s.delete(t) : s.add(t)
   activeTypes.value = s
+  loadGraph()
+}
+
+function toggleEvidenceType(type) {
+  const next = new Set(activeEvidenceTypes.value)
+  if (next.has(type)) {
+    if (next.size === 1) return // Keep at least one evidence class selected.
+    next.delete(type)
+  } else {
+    next.add(type)
+  }
+  activeEvidenceTypes.value = next
   loadGraph()
 }
 
@@ -538,6 +558,13 @@ onBeforeUnmount(() => {
         <option value="">全部关系</option>
         <option v-for="r in REL_OPTIONS" :key="r" :value="r">{{ REL_ZH[r] }}</option>
       </select>
+      <div class="type-chips evidence-chips" role="group" aria-label="关系证据可信类型">
+        <span class="evidence-caption">关系证据：</span>
+        <button v-for="item in EVIDENCE_OPTIONS" :key="item.value" class="chip evidence-chip"
+                :class="{ off: !activeEvidenceTypes.has(item.value) }"
+                :title="item.value === 'explicit' ? '原文中有直接支持句，默认开启' : '非事实关系，按需开启查看'"
+                @click="toggleEvidenceType(item.value)">{{ item.label }}</button>
+      </div>
     </div>
 
     <section v-if="view === 'overview'" class="kg-overview">
@@ -730,7 +757,7 @@ onBeforeUnmount(() => {
             <li>滚轮缩放、拖动平移，用左侧搜索可以定位某个知识点</li>
           </ul>
           <p class="muted" style="font-size:12px;margin-top:10px">
-            图谱完全由论文原文抽取，没有证据的内容不会出现在这里。</p>
+            默认只显示原文明示且能定位到原文句子的关系。AI 推断和语义相似默认隐藏，开启后也只作为待核验线索，不能当作论文事实。</p>
         </div>
       </aside>
     </div>
@@ -745,6 +772,9 @@ onBeforeUnmount(() => {
 .kg-jobbar .progressbar{width:160px}
 .kg-toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:14px 0 10px}
 .type-chips{display:flex;flex-wrap:wrap;gap:5px}
+.evidence-chips{align-items:center;padding-left:6px;border-left:1px solid var(--line)}
+.evidence-caption{font-size:12px;color:var(--muted,#718096)}
+.evidence-chip{--c:#536b84}
 .chip{--c:#999;display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:14px;border:1px solid var(--line);background:#fff;cursor:pointer;font-size:12px;color:var(--c);font-weight:600}
 .chip .cnt{color:var(--ink-3);font-weight:400}.chip.off{opacity:.38;filter:grayscale(.6)}
 .dust-toggle{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink-2);cursor:pointer;user-select:none}
