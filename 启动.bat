@@ -6,6 +6,7 @@ echo ========================================
 echo   PaperLib - LunWen TuShuGuan
 echo   Production launcher
 echo   http://127.0.0.1:8300
+echo   Project root: %CD%
 echo ========================================
 echo.
 
