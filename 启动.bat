@@ -35,12 +35,6 @@ rem 3) Synchronize backend dependencies.
 echo [2/5] Checking backend dependencies...
 ".venv\Scripts\python.exe" -m pip install -q -r backend\requirements.txt
 if errorlevel 1 goto :err_backend_deps
-echo [ERROR] Library integrity check failed. No database or paper files were changed.
-goto :fail
-:err_library
-echo [ERROR] Library integrity check failed. No database or paper files were changed.
-goto :fail
-:err_backend_deps
 
 rem 4) Ensure frontend dependencies exist, then ALWAYS build the production frontend.
 rem     Do not trust an old frontend\dist\index.html: it may belong to an older checkout.
@@ -86,6 +80,9 @@ echo [ERROR] npm.cmd was not found. Repair your Node.js installation.
 goto :fail
 :err_venv
 echo [ERROR] Failed to create the Python virtual environment.
+goto :fail
+:err_library
+echo [ERROR] Library integrity check failed. No database or paper files were changed.
 goto :fail
 :err_backend_deps
 echo [ERROR] Backend dependency installation failed.
