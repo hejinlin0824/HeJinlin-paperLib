@@ -5,7 +5,7 @@ import * as SigmaPkg from 'sigma'
 import Graph from 'graphology'
 import api from '../api'
 import { groupRelationsByEndpoints } from '../utils/graphEdges'
-import { computeCameraFit, computeSemanticLayout } from '../utils/graphLayout'
+import { computeCameraFit, computeSemanticLayout, toFramedCameraPoint } from '../utils/graphLayout'
 import { toast } from '../stores'
 
 const Sigma = SigmaPkg.default ?? SigmaPkg.Sigma
@@ -91,7 +91,11 @@ function fitCamera({ full = false, duration = 250 } = {}) {
   )
   // 默认视图优先保持节点可辨；“适配全图”按钮完整适配整个边界框。
   const ratio = full ? fit.ratio : Math.min(fit.ratio, 1.6)
-  renderer.getCamera().animate({ ...fit, ratio, angle: 0 }, { duration })
+  // Sigma v3 camera x/y live in normalized framed-graph space (roughly 0..1),
+  // while layout positions and computeCameraFit centers are in raw graph space.
+  // Convert explicitly or large semantic-lane coordinates move the camera off-canvas.
+  const cameraCenter = toFramedCameraPoint(renderer, { x: fit.x, y: fit.y })
+  renderer.getCamera().animate({ ...cameraCenter, ratio, angle: 0 }, { duration })
 }
 
 function renderGraph(data) {
@@ -153,7 +157,8 @@ function renderGraph(data) {
   fitCamera({ full: false, duration: focusNode ? 0 : 250 })
   if (focusNode && graph.hasNode(focusNode)) {
     const a = graph.getNodeAttributes(focusNode)
-    renderer.getCamera().animate({ x: a.x, y: a.y, ratio: 0.28 }, { duration: 350 })
+    const cameraCenter = toFramedCameraPoint(renderer, { x: a.x, y: a.y })
+    renderer.getCamera().animate({ ...cameraCenter, ratio: 0.28 }, { duration: 350 })
     focusNode = ''
   }
 }
