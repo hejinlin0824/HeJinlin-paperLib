@@ -35,9 +35,11 @@ def replace_paper_extraction(pid: str, entities: list, relations: list) -> dict:
     顺序保证幂等与失败安全：先在内存中收集并去重全部证据行 → 事务内删掉该论文
     全部旧证据 → 插入新证据 → 清理孤儿关系/实体。同一输入重复执行结果一致。
     """
-    paper = row("SELECT title, title_zh FROM papers WHERE id=?", (pid,))
+    paper = row("SELECT title, title_zh, library_role FROM papers WHERE id=?", (pid,))
     if not paper:
         raise RuntimeError("论文不存在")
+    if paper.get("library_role", "normal") != "normal":
+        raise RuntimeError("测试/排除论文不能写入科研知识图谱")
     paper_title = (paper["title_zh"] or paper["title"] or "").strip() or "未命名论文"
     block_texts, sec_of = _block_meta(pid)
     ts = now()
