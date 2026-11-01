@@ -27,7 +27,7 @@ export function computeSemanticLayout(nodes = [], options = {}) {
   const lanes = new Map()
   for (const node of nodes) {
     if (!node || node.id == null) continue
-    const lane = TYPE_LANE[node.type] ?? 4
+    const lane = TYPE_LANE[node.type] ?? 8
     if (!lanes.has(lane)) lanes.set(lane, [])
     lanes.get(lane).push(node)
   }
