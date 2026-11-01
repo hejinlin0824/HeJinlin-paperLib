@@ -72,11 +72,12 @@ export function computeCameraFit(bounds, viewport, options = {}) {
   if (!bounds || ![bounds.minX, bounds.maxX, bounds.minY, bounds.maxY].every(Number.isFinite)) {
     return { x: 0, y: 0, ratio: 1 }
   }
-  const graphWidth = Math.max(1, bounds.maxX - bounds.minX + padding * 2)
-  const graphHeight = Math.max(1, bounds.maxY - bounds.minY + padding * 2)
-  const ratio = Math.max(graphWidth / width, graphHeight / height)
-  return { x: (bounds.minX + bounds.maxX) / 2, y: (bounds.minY + bounds.maxY) / 2,
-    ratio: Math.min(maxRatio, Math.max(minRatio, ratio)) }
+  // Sigma v3 autoRescale normalizes graph positions to framedGraph before applying
+  // the camera. Its ratio is a dimensionless zoom multiplier (1 = fit the graph),
+  // so graph-unit / viewport-pixel calculations are invalid here.
+  // Keep the viewport/options arguments for API compatibility and safe callers.
+  void padding; void minRatio; void maxRatio; void width; void height
+  return { x: (bounds.minX + bounds.maxX) / 2, y: (bounds.minY + bounds.maxY) / 2, ratio: 1 }
 }
 
 /** Convert a graph-space point to the normalized coordinates expected by Sigma's camera. */
