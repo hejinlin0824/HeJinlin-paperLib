@@ -307,6 +307,8 @@ def test_run_job_success_and_query_paths(kg_db, monkeypatch):
     g = kg_queries.graph(paper_id="p1")
     labels = {n["label"] for n in g["nodes"]}
     assert "FedProx" in labels and any(n["type"] == "Paper" for n in g["nodes"])
+    assert g["edges"] and all(edge["evidence_text"] for edge in g["edges"])
+    assert all(edge["evidence_paper_id"] == "p1" for edge in g["edges"])
 
 
 def test_run_job_failure_keeps_old_graph(kg_db, monkeypatch):
