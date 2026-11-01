@@ -267,11 +267,11 @@ function switchView(v) {
   view.value = v
   panel.value = { kind: 'empty' }
   activeTopic.value = null
-  if (v === 'topics') { openTopics(); loadGraph() }
+  if (v === 'topics') { openTopics() }  // 主题视图不预载全图：pickTopic 的子图请求与全图请求并发时会互相覆盖
   else if (v === 'global') loadGraph()
 }
 
-const looksLikeTestPaper = p => /\\b(test|dummy|mock|fixture|sample|demo)\\b|测试|示例|样例/i.test(p.title_zh || p.title || '')
+const looksLikeTestPaper = p => /\b(test|dummy|mock|fixture|sample|demo)\b|测试|示例|样例/i.test(p.title_zh || p.title || '')
 
 async function changePaperScope(p, role) {
   try {

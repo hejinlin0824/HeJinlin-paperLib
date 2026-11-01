@@ -191,7 +191,13 @@ async def run_job(job_id: str):
         _mark(job_id, status="cancelled", stage="", error_message="抽取期间论文被标记为测试/排除数据，结果未写入图谱")
         return
     from .kg_store import replace_paper_extraction
-    stats = replace_paper_extraction(pid, ents[:MAX_ENTITIES], rels[:MAX_RELATIONS])
+    try:
+        stats = replace_paper_extraction(pid, ents[:MAX_ENTITIES], rels[:MAX_RELATIONS])
+    except Exception as e:  # noqa: BLE001
+        # 论文可能在抽取期间被删除/改分类：任务必须落地为 failed，不能永远停在 running
+        _mark(job_id, status="failed", stage="",
+              error_message=f"写入图谱失败（旧图谱保持不变）：{str(e)[:200]}")
+        return
     stats["warnings"] = warnings[:20]
     stats["model"] = f"{info['provider']}/{info['model']}"
     _mark(job_id, status="completed", stage="", progress=1.0, stats_json=dumps(stats))

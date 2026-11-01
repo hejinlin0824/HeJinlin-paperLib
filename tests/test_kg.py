@@ -458,3 +458,20 @@ def test_test_paper_cannot_write_graph_even_if_storage_called_directly(kg_db):
     ents, rels, _ = validate_good("test-paper")
     with pytest.raises(RuntimeError, match="不能写入"):
         kg_store.replace_paper_extraction("test-paper", ents, rels)
+
+
+def test_run_job_marks_failed_when_persist_raises(kg_db, monkeypatch):
+    """写库阶段抛错（如论文中途被删/改分类）时，任务必须落地为 failed，不能永远停在 running。"""
+    seed_paper()
+    monkeypatch.setattr(kg_extract, "chat", _fake_chat_good)
+    from app.services import kg_store
+
+    def _boom(pid, ents, rels):
+        raise RuntimeError("论文不存在")
+    monkeypatch.setattr(kg_store, "replace_paper_extraction", _boom)
+    job = kg_extract.create_job("p1")
+    import asyncio
+    asyncio.run(kg_extract.run_job(job["id"]))
+    j = app_db.row("SELECT * FROM kg_extraction_jobs WHERE id=?", (job["id"],))
+    assert j["status"] == "failed"
+    assert "写入图谱失败" in j["error_message"]
