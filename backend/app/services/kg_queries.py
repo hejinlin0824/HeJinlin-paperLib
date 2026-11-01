@@ -123,9 +123,9 @@ def graph(paper_id: str | None = None, entity_ids: list[str] | None = None,
     edges = rows(
         f"SELECT r.id, r.source_entity_id, r.target_entity_id, r.relation_type, "
         f"r.evidence_type, r.confidence, r.review_status, "
-        f"(SELECT COUNT(*) FROM kg_visible_evidence ev WHERE ev.relation_id=r.id) ev_count, "
+        f"(SELECT COUNT(*) FROM kg_visible_evidence ev WHERE ev.relation_id=r.id AND ev.evidence_type=r.evidence_type) ev_count, "
         f"(SELECT GROUP_CONCAT(DISTINCT paper_id) FROM kg_visible_evidence ev WHERE "
-        f"ev.relation_id=r.id) papers, "
+        f"ev.relation_id=r.id AND ev.evidence_type=r.evidence_type) papers, "
         f"(SELECT ev.evidence_text FROM kg_visible_evidence ev WHERE ev.relation_id=r.id "
         f"AND ev.evidence_type=r.evidence_type ORDER BY ev.confidence DESC, ev.created_at DESC LIMIT 1) evidence_text, "
         f"(SELECT ev.section_name FROM kg_visible_evidence ev WHERE ev.relation_id=r.id "
@@ -193,7 +193,8 @@ def entity_detail(eid: str) -> dict | None:
         "s.entity_type AS source_type, "
         "t.canonical_name AS target_name, t.name_zh AS target_name_zh, "
         "t.entity_type AS target_type, "
-        "(SELECT COUNT(*) FROM kg_visible_evidence ev WHERE ev.relation_id=r.id) evidence_count "
+        "(SELECT COUNT(*) FROM kg_visible_evidence ev WHERE ev.relation_id=r.id "
+        "AND ev.evidence_type=r.evidence_type) evidence_count "
         "FROM kg_visible_relations r JOIN kg_visible_entities s ON s.id=r.source_entity_id "
         "JOIN kg_visible_entities t ON t.id=r.target_entity_id "
         "WHERE (r.source_entity_id=? OR r.target_entity_id=?) AND r.review_status!='rejected' "
@@ -257,7 +258,8 @@ def paper_structure(pid: str) -> dict | None:
         "t.description, ev.block_id, ev.evidence_text, ev.section_name "
         "FROM kg_visible_relations r JOIN kg_visible_entities t ON t.id=r.target_entity_id "
         "JOIN kg_visible_evidence ev ON ev.relation_id=r.id "
-        "WHERE ev.paper_id=? AND r.evidence_type='explicit' AND r.review_status!='rejected' "
+        "WHERE ev.paper_id=? AND ev.evidence_type='explicit' AND r.evidence_type='explicit' "
+        "AND r.review_status!='rejected' "
         "ORDER BY r.relation_type, r.confidence DESC", (pid,))
     buckets = {"problems": {"ADDRESSES", "MITIGATES"}, "proposals": {"PROPOSES"},
                "datasets": {"USES", "EVALUATED_ON"}, "models": set(), "metrics": {"USES_METRIC"},
@@ -299,7 +301,7 @@ def topics() -> dict:
         "r.source_entity_id AS paper_entity_id "
         "FROM kg_visible_relations r JOIN kg_visible_entities t ON t.id=r.target_entity_id "
         "JOIN kg_visible_evidence ev ON ev.relation_id=r.id "
-        "WHERE r.relation_type='BELONGS_TO' AND r.evidence_type='explicit' AND r.review_status!='rejected' AND t.entity_type='ResearchArea'")
+        "WHERE r.relation_type='BELONGS_TO' AND r.evidence_type='explicit' AND ev.evidence_type='explicit' AND r.review_status!='rejected' AND t.entity_type='ResearchArea'")
     grouped: dict[str, dict] = {}
     for r in area_rows:
         g = grouped.setdefault(r["area_id"], {"name": r["name"], "papers": set(),
@@ -339,7 +341,7 @@ def topics() -> dict:
         "GROUP_CONCAT(DISTINCT ev.paper_id) papers "
         "FROM kg_visible_relations r JOIN kg_visible_entities t ON t.id=r.target_entity_id "
         "JOIN kg_visible_evidence ev ON ev.relation_id=r.id "
-        "WHERE r.relation_type='USES' AND r.evidence_type='explicit' "
+        "WHERE r.relation_type='USES' AND r.evidence_type='explicit' AND ev.evidence_type='explicit' "
         "AND r.review_status!='rejected' AND t.entity_type='Dataset' "
         "GROUP BY t.id HAVING paper_count>=2 ORDER BY paper_count DESC LIMIT 12")
     shared_resources = [{
