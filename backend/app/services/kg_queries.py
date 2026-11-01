@@ -52,6 +52,14 @@ def graph(paper_id: str | None = None, entity_ids: list[str] | None = None,
     allowed_evidence = {"explicit", "inferred", "similarity"}
     evidence_types = (["explicit"] if evidence_types is None else
                       [t for t in evidence_types if t in allowed_evidence])
+    degree_filter, degree_args = "", []
+    if evidence_types:
+        degree_filter += " AND r.evidence_type IN (" + ",".join("?" * len(evidence_types)) + ")"
+        degree_args.extend(evidence_types)
+    else:
+        degree_filter += " AND 1=0"
+    if not include_rejected:
+        degree_filter += " AND r.review_status!='rejected'"
     ids: list[str] = []
 
     def _type_filter(selected: list[str]) -> list[str]:
@@ -114,8 +122,8 @@ def graph(paper_id: str | None = None, entity_ids: list[str] | None = None,
         # 全局视图：按连接度取核心节点（限流渲染），库内论文节点始终保留
         top = rows(
             "SELECT e.id, (SELECT COUNT(*) FROM kg_visible_relations r WHERE "
-            "r.source_entity_id=e.id OR r.target_entity_id=e.id) deg "
-            "FROM kg_visible_entities e ORDER BY deg DESC LIMIT ?", (limit,))
+            "(r.source_entity_id=e.id OR r.target_entity_id=e.id)" + degree_filter + ") deg "
+            "FROM kg_visible_entities e ORDER BY deg DESC LIMIT ?", (*degree_args, limit))
         ids = [r["id"] for r in top]
         papers = rows("SELECT id FROM kg_visible_entities WHERE id LIKE 'paper_%' LIMIT 100")
         ids = list(dict.fromkeys(ids + [p["id"] for p in papers]))
@@ -127,8 +135,9 @@ def graph(paper_id: str | None = None, entity_ids: list[str] | None = None,
     marks = ",".join("?" * len(ids))
     nodes = rows(
         f"SELECT e.id, e.entity_type, e.canonical_name, e.name_zh, e.description, e.metadata_json, "
-        f"(SELECT COUNT(*) FROM kg_visible_relations r WHERE r.source_entity_id=e.id OR "
-        f"r.target_entity_id=e.id) deg FROM kg_visible_entities e WHERE e.id IN ({marks})", ids)
+        f"(SELECT COUNT(*) FROM kg_visible_relations r WHERE "
+        f"(r.source_entity_id=e.id OR r.target_entity_id=e.id){degree_filter}) deg "
+        f"FROM kg_visible_entities e WHERE e.id IN ({marks})", (*degree_args, *ids))
     rel_filter, rel_args = "", []
     if relation_types:
         rel_filter += " AND r.relation_type IN (" + ",".join("?" * len(relation_types)) + ")"
