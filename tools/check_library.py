@@ -30,6 +30,9 @@ def inspect_library(root: Path = ROOT) -> dict:
         "database_exists": db_path.is_file(),
         "database_bytes": db_path.stat().st_size if db_path.is_file() else 0,
         "paper_records": None,
+        "normal_paper_records": None,
+        "paper_roles": {},
+        "extracted_paper_records": None,
         "pdf_files": len(pdfs),
         "paper_folders": len(paper_dirs),
         "safe_to_start": True,
@@ -52,6 +55,19 @@ def inspect_library(root: Path = ROOT) -> dict:
                 result.update(safe_to_start=False, reason="数据库存在但缺少 papers 表；数据库可能不是 PaperLib 数据库。")
                 return result
             result["paper_records"] = conn.execute("SELECT COUNT(*) FROM papers").fetchone()[0]
+            columns = {r[1] for r in conn.execute("PRAGMA table_info(papers)")}
+            if "library_role" in columns:
+                role_rows = conn.execute(
+                    "SELECT COALESCE(library_role, 'normal'), COUNT(*) FROM papers GROUP BY 1"
+                ).fetchall()
+                result["paper_roles"] = {role: count for role, count in role_rows}
+                result["normal_paper_records"] = result["paper_roles"].get("normal", 0)
+            else:
+                result["normal_paper_records"] = result["paper_records"]
+            if "kg_evidence" in tables:
+                result["extracted_paper_records"] = conn.execute(
+                    "SELECT COUNT(DISTINCT paper_id) FROM kg_evidence"
+                ).fetchone()[0]
     except sqlite3.Error as exc:
         result.update(safe_to_start=False, reason=f"数据库无法只读打开：{exc}")
         return result
@@ -72,7 +88,11 @@ def main() -> int:
     if not report["safe_to_start"]:
         print("\n[SAFE GUARD] 未修改任何文件，服务不会启动。请先备份整个 data 目录并核对数据库。")
         return 2
-    print(f"\n[LIBRARY] PaperLib 数据库：{report['paper_records'] if report['paper_records'] is not None else '尚未初始化'} 篇论文")
+    print(f"\n[LIBRARY] 数据库论文：{report['paper_records'] if report['paper_records'] is not None else '尚未初始化'} 篇")
+    if report["normal_paper_records"] is not None:
+        print(f"[LIBRARY] 正常纳入知识图谱：{report['normal_paper_records']} 篇；分类分布：{report['paper_roles']}")
+    if report["extracted_paper_records"] is not None:
+        print(f"[LIBRARY] 已有知识抽取证据：{report['extracted_paper_records']} 篇")
     return 0
 
 
