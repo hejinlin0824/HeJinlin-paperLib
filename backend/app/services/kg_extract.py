@@ -12,7 +12,7 @@ from .kg_schema import parse_llm_json, validate_extraction
 from .translate import chat, engine_info, engine_ready
 
 EXTRACTION_VERSION = "1.0"
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"
 SECTION_CHAR_BUDGET = 7000
 MAX_ENTITIES = 120
 MAX_RELATIONS = 150
