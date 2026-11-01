@@ -65,6 +65,25 @@ export const api = {
   addGlossary: (body) => request('/api/glossary', { method: 'POST', body }),
   updateGlossary: (gid, body) => request(`/api/glossary/${gid}`, { method: 'PATCH', body }),
   deleteGlossary: (gid) => request(`/api/glossary/${gid}`, { method: 'DELETE' }),
+  // 知识图谱
+  kgOverview: () => request('/api/knowledge-graph/overview'),
+  kgGraph: (params = {}) => {
+    const qs = new URLSearchParams()
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== null && v !== '') qs.set(k, v)
+    }
+    const s = qs.toString()
+    return request('/api/knowledge-graph/graph' + (s ? '?' + s : ''))
+  },
+  kgEntity: (id) => request(`/api/knowledge-graph/entities/${id}`),
+  kgEntityNeighbors: (id) => request(`/api/knowledge-graph/entities/${id}/neighbors`),
+  kgRelation: (id) => request(`/api/knowledge-graph/relations/${id}`),
+  kgPaperStructure: (pid) => request(`/api/knowledge-graph/papers/${pid}`),
+  kgTopics: () => request('/api/knowledge-graph/topics'),
+  kgJobs: () => request('/api/knowledge-graph/jobs'),
+  kgExtractPaper: (pid) => request(`/api/knowledge-graph/papers/${pid}/extract`, { method: 'POST' }),
+  kgRebuild: () => request('/api/knowledge-graph/rebuild', { method: 'POST' }),
+  kgRetryJob: (jid) => request(`/api/knowledge-graph/jobs/${jid}/retry`, { method: 'POST' }),
 }
 
 export default api

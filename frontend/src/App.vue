@@ -10,6 +10,7 @@ const navs = [
   { path: '/', label: '工作台', ico: '⌂' },
   { path: '/library', label: '论文库', ico: '▤' },
   { path: '/log', label: '研究总表', ico: '☰' },
+  { path: '/graph', label: '知识图谱', ico: '✦' },
   { path: '/settings', label: '设置', ico: '⚙' },
 ]
 </script>
