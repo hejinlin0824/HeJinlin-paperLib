@@ -16,6 +16,8 @@ const view = ref('overview')
 const selPaper = ref('')
 const q = ref('')
 const activeTypes = ref(new Set())
+// Only relations explicitly supported by source text are visible by default.
+const activeEvidenceTypes = ref(new Set(['explicit']))
 const selRelation = ref('')
 const showDust = ref(false)
 const graphData = ref(null)
@@ -28,6 +30,11 @@ const job = ref(null)
 const jobsTimer = ref(null)
 const nodeCount = ref(0)
 const edgeCount = ref(0)
+// Evidence list is the default because users need to understand claims before exploring topology.
+const explorerMode = ref('evidence')
+const showRejected = ref(false)
+const focusEntityId = ref('')
+const focusEntityLabel = ref('')
 
 const REL_ZH = {
   PROPOSES: '提出', ADDRESSES: '针对问题', USES: '使用', USES_METRIC: '评测指标',
@@ -52,7 +59,29 @@ const TYPE_STYLE = {
   Task: { color: '#587ca5', zh: '任务' },
   Institution: { color: '#718096', zh: '机构' },
 }
-const EVI_LABEL = { explicit: '原文', inferred: '推断', similarity: '相似' }
+const EVI_LABEL = { explicit: '原文明示', inferred: 'AI 推断', similarity: '语义相似' }
+const EVIDENCE_OPTIONS = [
+  { value: 'explicit', label: '原文明示' },
+  { value: 'inferred', label: 'AI 推断' },
+  { value: 'similarity', label: '语义相似' },
+]
+
+const relationRows = computed(() => {
+  const nodes = new Map((graphData.value?.nodes || []).map(n => [n.id, n]))
+  return (graphData.value?.edges || []).map(edge => {
+    const source = nodes.get(edge.source)
+    const target = nodes.get(edge.target)
+    return {
+      ...edge,
+      sourceLabel: source?.label_zh || source?.label || edge.source,
+      targetLabel: target?.label_zh || target?.label || edge.target,
+      relationLabel: REL_ZH[edge.relation_type] || edge.relation_type,
+      evidencePaperTitle: papers.value.find(p => p.id === edge.evidence_paper_id)?.title_zh
+        || papers.value.find(p => p.id === edge.evidence_paper_id)?.title || '来源论文',
+    }
+  }).sort((a, b) => (Number(b.evidence_count) || 0) - (Number(a.evidence_count) || 0)
+    || a.sourceLabel.localeCompare(b.sourceLabel, 'zh-CN'))
+})
 
 const presentTypes = computed(() => {
   if (!overview.value) return []
@@ -105,12 +134,14 @@ function fitCamera({ full = false, duration = 250 } = {}) {
 
 function renderGraph(data) {
   graphData.value = data
-  ensureRenderer()
   const visible = data.nodes.filter(n => showDust.value || n.degree > 0 || n.is_library_paper)
   const keep = new Set(visible.map(n => n.id))
   const shownEdges = data.edges.filter(e => keep.has(e.source) && keep.has(e.target))
   nodeCount.value = visible.length
   edgeCount.value = shownEdges.length
+  // Do not instantiate WebGL for the evidence-first list view; Sigma needs a visible canvas.
+  if (explorerMode.value !== 'graph') return
+  ensureRenderer()
   const layout = computeSemanticLayout(visible)
   const pos = layout.positions
   layoutBounds = layout.bounds
@@ -181,11 +212,14 @@ async function loadGraph() {
     // A newer filter/view action may have started while Vue was updating the DOM.
     if (requestId !== graphRequestSequence || view.value !== 'global') return
     const params = {}
-    if (selPaper.value) params.paper_id = selPaper.value
+    if (focusEntityId.value) params.focus_entity_id = focusEntityId.value
+    else if (selPaper.value) params.paper_id = selPaper.value
     else if (q.value.trim()) params.q = q.value.trim()
     const ts = [...activeTypes.value]
     if (ts.length) params.types = ts.join(',')
     if (selRelation.value) params.relation_types = selRelation.value
+    params.evidence_types = [...activeEvidenceTypes.value].join(',')
+    params.include_rejected = showRejected.value ? 'true' : 'false'
 
     const data = await api.kgGraph(params)
     // Never let a slower, stale response replace the latest graph with old/empty data.
@@ -200,10 +234,75 @@ async function loadGraph() {
   }
 }
 
+async function focusOnEntity(entity) {
+  focusEntityId.value = entity.id
+  focusEntityLabel.value = zhName(entity)
+  selPaper.value = ''
+  q.value = ''
+  explorerMode.value = 'graph'
+  await nextTick()
+  loadGraph()
+}
+
+function clearGraphFocus() {
+  focusEntityId.value = ''
+  focusEntityLabel.value = ''
+  loadGraph()
+}
+
 function toggleType(t) {
   const s = new Set(activeTypes.value)
   s.has(t) ? s.delete(t) : s.add(t)
   activeTypes.value = s
+  loadGraph()
+}
+
+async function setExplorerMode(mode) {
+  explorerMode.value = mode
+  if (mode === 'graph' && graphData.value) {
+    await nextTick()
+    renderGraph(graphData.value)
+  }
+}
+
+async function refreshCurrentGraph() {
+  if (view.value === 'global') return loadGraph()
+  if (view.value !== 'topics' || !activeTopic.value) return
+  const requestId = ++graphRequestSequence
+  loading.value = true
+  try {
+    const data = await api.kgGraph({
+      entity_ids: activeTopic.value.entity_ids.join(','),
+      evidence_types: [...activeEvidenceTypes.value].join(','),
+      include_rejected: showRejected.value ? 'true' : 'false',
+    })
+    if (requestId === graphRequestSequence && view.value === 'topics') renderGraph(data)
+  } catch (e) {
+    if (requestId === graphRequestSequence) toast('关系视图刷新失败：' + e.message, 'err')
+  } finally {
+    if (requestId === graphRequestSequence) loading.value = false
+  }
+}
+
+async function reviewRelation(edge, status) {
+  try {
+    await api.kgReviewRelation(edge.id, status)
+    toast(status === 'verified' ? '已确认这条关系' : status === 'rejected' ? '已驳回这条关系（证据保留）' : '已恢复为待核验', 'ok')
+    await refreshCurrentGraph()
+  } catch (e) {
+    toast('关系审核失败：' + e.message, 'err')
+  }
+}
+
+function toggleEvidenceType(type) {
+  const next = new Set(activeEvidenceTypes.value)
+  if (next.has(type)) {
+    if (next.size === 1) return // Keep at least one evidence class selected.
+    next.delete(type)
+  } else {
+    next.add(type)
+  }
+  activeEvidenceTypes.value = next
   loadGraph()
 }
 
@@ -353,6 +452,8 @@ function readerUrl(pid, blockId) {
 
 function onSearch() {
   focusNode = ''
+  focusEntityId.value = ''
+  focusEntityLabel.value = ''
   selPaper.value = ''
   loadGraph()
 }
@@ -493,8 +594,9 @@ onBeforeUnmount(() => {
         <p class="page-sub" v-if="overview">
           {{ overview.entities_total }} 个知识点 · {{ overview.relations_total }} 条关系 ·
           已纳入 {{ overview.papers_extracted }}/{{ overview.papers_total }} 篇论文 ·
-          每条关系均可追溯到论文证据<template v-if="overview.inferred_relations || overview.similarity_relations">
-           （AI 推断 {{ overview.inferred_relations || 0 }} 条 · 语义相似 {{ overview.similarity_relations || 0 }} 条）</template>
+          每条关系附来源证据 · 待核验 {{ overview.relation_review?.unreviewed || 0 }} 条 · 人工确认 {{ overview.relation_review?.verified || 0 }} 条
+          <template v-if="overview.inferred_relations || overview.similarity_relations">
+           · 旧数据推断 {{ overview.inferred_relations || 0 }} 条 · 语义相似 {{ overview.similarity_relations || 0 }} 条</template>
         </p>
       </div>
       <div class="kg-actions">
@@ -513,9 +615,21 @@ onBeforeUnmount(() => {
       <span>{{ job.progress }}%</span>
     </div>
 
+    <div v-if="view !== 'overview'" class="kg-modebar">
+      <span>关系呈现：</span>
+      <button class="btn sm" :class="{ primary: explorerMode === 'evidence' }" @click="setExplorerMode('evidence')">证据清单</button>
+      <button class="btn sm" :class="{ primary: explorerMode === 'graph' }" @click="setExplorerMode('graph')">关系图</button>
+      <span class="kg-modehint">先核验每条关系是否被引文支持，再按需查看网络结构</span>
+      <span v-if="focusEntityId" class="kg-focus-label">局部一跳：{{ focusEntityLabel }}</span>
+      <button v-if="focusEntityId" class="btn sm" @click="clearGraphFocus">返回全库关系</button>
+      <button class="btn sm" :class="{ primary: showRejected }" @click="showRejected = !showRejected; refreshCurrentGraph()">
+        {{ showRejected ? '隐藏已驳回' : '显示已驳回' }}
+      </button>
+    </div>
+
     <div v-if="view === 'global'" class="kg-toolbar">
-      <select class="select" v-model="selPaper" @change="q = ''; loadGraph()" style="max-width:300px">
-        <option value="">全部论文（星系全景）</option>
+      <select class="select" v-model="selPaper" @change="q = ''; focusEntityId = ''; focusEntityLabel = ''; loadGraph()" style="max-width:300px">
+        <option value="">全部论文（全库关系）</option>
         <option v-for="p in papers" :key="p.id" :value="p.id">
           只看：{{ p.title_zh || p.title }}
         </option>
@@ -538,6 +652,13 @@ onBeforeUnmount(() => {
         <option value="">全部关系</option>
         <option v-for="r in REL_OPTIONS" :key="r" :value="r">{{ REL_ZH[r] }}</option>
       </select>
+      <div class="type-chips evidence-chips" role="group" aria-label="关系证据可信类型">
+        <span class="evidence-caption">关系证据：</span>
+        <button v-for="item in EVIDENCE_OPTIONS" :key="item.value" class="chip evidence-chip"
+                :class="{ off: !activeEvidenceTypes.has(item.value) }"
+                :title="item.value === 'explicit' ? '原文中有直接支持句，默认开启' : '非事实关系，按需开启查看'"
+                @click="toggleEvidenceType(item.value)">{{ item.label }}</button>
+      </div>
     </div>
 
     <section v-if="view === 'overview'" class="kg-overview">
@@ -583,7 +704,29 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <div class="kg-canvas-wrap">
+      <section v-if="explorerMode === 'evidence'" class="kg-evidence-list">
+        <header class="kg-evidence-head">
+          <div><h3>关系证据核验</h3><p>以下是模型抽取的候选关系。逐条检查引文是否真正支持这条关系；未人工确认前，不应当作可靠结论。</p></div>
+          <strong>{{ relationRows.length }} 条</strong>
+        </header>
+        <div v-if="loading" class="kg-evidence-empty">正在读取关系和原文证据…</div>
+        <div v-else-if="!relationRows.length" class="kg-evidence-empty">
+          当前筛选条件下没有关系。可以切换论文、调整类型，或在证据筛选中单独开启 AI 推断。
+        </div>
+        <article v-for="edge in relationRows" :key="edge.id" class="kg-evidence-row" @click="openRelation(edge.id)">
+          <div class="kg-evidence-triple"><b>{{ edge.sourceLabel }}</b><span>{{ edge.relationLabel }} →</span><b>{{ edge.targetLabel }}</b></div>
+          <p class="kg-evidence-quote">“{{ edge.evidence_text || '该关系暂无可显示的原文摘录，请打开详情核验。' }}”</p>
+          <div class="kg-evidence-meta"><span>{{ edge.evidencePaperTitle }}</span><span v-if="edge.section_name">{{ edge.section_name }}</span><span>{{ edge.evidence_count }} 条证据</span><span class="kg-review-status" :class="edge.review_status">{{ edge.review_status === 'verified' ? '人工已确认' : edge.review_status === 'rejected' ? '已驳回' : '待核验' }}</span><span class="kg-open-detail">查看证据 ›</span></div>
+          <div class="kg-review-actions">
+            <button v-if="edge.review_status !== 'verified'" class="btn sm" @click.stop="reviewRelation(edge, 'verified')">确认关系</button>
+            <button v-else class="btn sm" @click.stop="reviewRelation(edge, 'unreviewed')">取消确认</button>
+            <button v-if="edge.review_status !== 'rejected'" class="btn sm danger" @click.stop="reviewRelation(edge, 'rejected')">判为错误</button>
+            <button v-else class="btn sm" @click.stop="reviewRelation(edge, 'unreviewed')">恢复待核验</button>
+          </div>
+        </article>
+      </section>
+
+      <div v-show="explorerMode === 'graph'" class="kg-canvas-wrap">
         <div class="kg-canvas-controls">
           <button class="btn sm" type="button" @click="fitCamera({ full: true })">适配全图</button>
           <button class="btn sm" type="button" @click="fitCamera({ full: false })">可读视图</button>
@@ -617,6 +760,7 @@ onBeforeUnmount(() => {
             <router-link v-if="panel.d.library_paper_id" class="btn sm" :to="readerUrl(panel.d.library_paper_id)">
               ↗ 打开这篇论文
             </router-link>
+            <button v-if="view === 'global'" class="btn sm" @click="focusOnEntity(panel.d)">围绕此知识点展开一跳关系</button>
           </div>
           <p v-if="panel.d.description" class="p-desc">{{ panel.d.description }}</p>
           <p v-if="panel.d.aliases.length" class="p-alias">别名：{{ panel.d.aliases.join('、') }}</p>
@@ -658,6 +802,7 @@ onBeforeUnmount(() => {
             <div class="muted" style="font-size:12px">
               <span :class="{ 'ev-warn': panel.d.evidence_type !== 'explicit' }">
                 {{ EVI_LABEL[panel.d.evidence_type] || panel.d.evidence_type }}</span>
+              · {{ panel.d.review_status === 'verified' ? '人工已确认' : panel.d.review_status === 'rejected' ? '已驳回' : '待核验' }}
               <template v-if="panel.d.evidence_type === 'inferred'">（AI 根据论文上下文推断，需结合原文判断）</template>
               <template v-else-if="panel.d.evidence_type === 'similarity'">（语义相似，不代表技术继承或因果关系）</template>
             </div>
@@ -668,6 +813,7 @@ onBeforeUnmount(() => {
               <div class="ev-meta">
                 <span class="ev-paper">{{ e.paper_title }}</span>
                 <span v-if="e.section_name" class="muted">· {{ e.section_name }}</span>
+                <span class="ev-badge" :class="e.evidence_type">{{ EVI_LABEL[e.evidence_type] || e.evidence_type }}</span>
               </div>
               <div class="ev-text">“{{ e.evidence_text }}”</div>
               <a v-if="!e.stale" class="ev-jump" :href="readerUrl(e.paper_id, e.block_id)" target="_blank">定位原文 ↗</a>
@@ -730,7 +876,7 @@ onBeforeUnmount(() => {
             <li>滚轮缩放、拖动平移，用左侧搜索可以定位某个知识点</li>
           </ul>
           <p class="muted" style="font-size:12px;margin-top:10px">
-            图谱完全由论文原文抽取，没有证据的内容不会出现在这里。</p>
+            默认只显示原文明示且能定位到原文句子的关系。AI 推断和语义相似默认隐藏，开启后也只作为待核验线索，不能当作论文事实。</p>
         </div>
       </aside>
     </div>
@@ -745,12 +891,37 @@ onBeforeUnmount(() => {
 .kg-jobbar .progressbar{width:160px}
 .kg-toolbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:14px 0 10px}
 .type-chips{display:flex;flex-wrap:wrap;gap:5px}
+.evidence-chips{align-items:center;padding-left:6px;border-left:1px solid var(--line)}
+.evidence-caption{font-size:12px;color:var(--muted,#718096)}
+.evidence-chip{--c:#536b84}
 .chip{--c:#999;display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:14px;border:1px solid var(--line);background:#fff;cursor:pointer;font-size:12px;color:var(--c);font-weight:600}
 .chip .cnt{color:var(--ink-3);font-weight:400}.chip.off{opacity:.38;filter:grayscale(.6)}
 .dust-toggle{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink-2);cursor:pointer;user-select:none}
 .dust-toggle .box{width:14px;height:14px;border-radius:4px;border:1px solid var(--line);background:#fff;display:inline-block}
 .dust-toggle .box.on{background:var(--accent);border-color:var(--accent)}
 .kg-body{display:flex;gap:14px;flex:1;min-height:0}
+.kg-modebar{display:flex;align-items:center;gap:8px;margin:6px 0 10px;color:#526174;font-size:12px}
+.kg-modehint{margin-left:6px;color:#718096}
+.kg-focus-label{font-size:12px;color:#315f8b;background:#eef5fb;border:1px solid #d5e4f1;border-radius:12px;padding:4px 9px}
+.kg-evidence-list{flex:1;min-width:0;max-height:calc(100vh - 265px);min-height:460px;overflow:auto;background:#fff;border:1px solid #d8e1eb;border-radius:12px;padding:14px;box-shadow:0 8px 24px rgba(35,55,80,.05)}
+.kg-evidence-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:2px 4px 12px;border-bottom:1px solid #e7edf3}
+.kg-evidence-head h3{margin:0 0 4px;font-size:15px;color:#24364b}
+.kg-evidence-head p{margin:0;color:#718096;font-size:12px;line-height:1.6}
+.kg-evidence-head strong{white-space:nowrap;color:#315f8b}
+.kg-evidence-row{display:block;width:100%;text-align:left;border:0;border-bottom:1px solid #edf1f5;background:#fff;padding:13px 8px;color:#334155}
+.kg-evidence-row:hover{background:#f7f9fc}
+.kg-review-status{border-radius:10px;padding:2px 7px;background:#fff4df;color:#9a641f}
+.kg-review-status.verified{background:#e7f5ec;color:#267448}
+.kg-review-status.rejected{background:#fce9e8;color:#a33d36}
+.kg-review-actions{display:flex;gap:6px;margin-top:8px}
+.kg-review-actions .danger{color:#a33d36;border-color:#e9c2bf}
+.kg-evidence-triple{display:flex;align-items:center;flex-wrap:wrap;gap:7px;font-size:13px}
+.kg-evidence-triple b{color:#203c59}
+.kg-evidence-triple span{color:#47769b;font-size:12px;font-weight:700}
+.kg-evidence-quote{margin:7px 0;color:#526174;font-size:12.5px;line-height:1.65}
+.kg-evidence-meta{display:flex;flex-wrap:wrap;gap:6px 12px;color:#8190a2;font-size:11px}
+.kg-open-detail{margin-left:auto;color:#315f8b;font-weight:600}
+.kg-evidence-empty{padding:36px 12px;text-align:center;color:#718096;font-size:13px}
 .kg-topiclist{width:230px;flex-shrink:0;overflow:auto}
 .topic-item{padding:10px 12px;border:1px solid var(--line);border-radius:8px;margin-bottom:8px;cursor:pointer;background:var(--panel)}
 .topic-item:hover,.topic-item.on{border-color:var(--accent)}.topic-item.on{background:var(--accent-soft)}

@@ -78,6 +78,7 @@ export const api = {
   kgEntity: (id) => request(`/api/knowledge-graph/entities/${id}`),
   kgEntityNeighbors: (id) => request(`/api/knowledge-graph/entities/${id}/neighbors`),
   kgRelation: (id) => request(`/api/knowledge-graph/relations/${id}`),
+  kgReviewRelation: (id, review_status) => request(`/api/knowledge-graph/relations/${id}/review`, { method: 'PATCH', body: { review_status } }),
   kgPaperStructure: (pid) => request(`/api/knowledge-graph/papers/${pid}`),
   kgTopics: () => request('/api/knowledge-graph/topics'),
   kgSetPaperScope: (pid, library_role) => request(`/api/knowledge-graph/papers/${pid}/scope`, { method: 'PATCH', body: { library_role } }),

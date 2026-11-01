@@ -15,6 +15,8 @@ def overview() -> dict:
         "SELECT relation_type, COUNT(*) n FROM kg_visible_relations GROUP BY relation_type")}
     job_counts = {r["status"]: r["n"] for r in rows(
         "SELECT status, COUNT(*) n FROM kg_visible_jobs GROUP BY status")}
+    review_counts = {r["review_status"]: r["n"] for r in rows(
+        "SELECT review_status, COUNT(*) n FROM kg_visible_relations GROUP BY review_status")}
     return {
         "papers_total": row("SELECT COUNT(*) n FROM papers WHERE COALESCE(library_role, 'normal')='normal'")["n"],
         "papers_extracted": row(
@@ -24,6 +26,7 @@ def overview() -> dict:
         "entities": {t: ent_counts.get(t, 0) for t in sorted(ENTITY_TYPES) if ent_counts.get(t)},
         "relations_total": sum(rel_counts.values()),
         "relations": rel_counts,
+        "relation_review": review_counts,
         "inferred_relations": row(
             "SELECT COUNT(*) n FROM kg_visible_relations WHERE evidence_type='inferred'")["n"],
         "similarity_relations": row(
@@ -35,10 +38,28 @@ def overview() -> dict:
 
 def graph(paper_id: str | None = None, entity_ids: list[str] | None = None,
           types: list[str] | None = None, relation_types: list[str] | None = None,
+          evidence_types: list[str] | None = None,
+          include_rejected: bool = False,
+          focus_entity_id: str | None = None,
           q: str | None = None, limit: int = 250) -> dict:
+    """Query a graph. By default only source-explicit relations are shown.
+
+    Inferred and similarity edges are opt-in because they are hypotheses, not facts.
+    """
     limit = max(20, min(int(limit or 250), MAX_NODES))
     types = [t for t in (types or []) if t in ENTITY_TYPES] or None
     relation_types = relation_types or None
+    allowed_evidence = {"explicit", "inferred", "similarity"}
+    evidence_types = (["explicit"] if evidence_types is None else
+                      [t for t in evidence_types if t in allowed_evidence])
+    degree_filter, degree_args = "", []
+    if evidence_types:
+        degree_filter += " AND r.evidence_type IN (" + ",".join("?" * len(evidence_types)) + ")"
+        degree_args.extend(evidence_types)
+    else:
+        degree_filter += " AND 1=0"
+    if not include_rejected:
+        degree_filter += " AND r.review_status!='rejected'"
     ids: list[str] = []
 
     def _type_filter(selected: list[str]) -> list[str]:
@@ -50,7 +71,32 @@ def graph(paper_id: str | None = None, entity_ids: list[str] | None = None,
             (*selected, *types))}
         return [i for i in selected if i in keep]
 
-    if entity_ids:
+    if focus_entity_id:
+        # A local graph is deliberately bounded to the selected node and its strongest
+        # direct neighbours. This follows the search/expand interaction used by graph
+        # exploration tools instead of dumping the entire database into one scene.
+        focus = row("SELECT id FROM kg_visible_entities WHERE id=?", (focus_entity_id,))
+        if focus:
+            ids = [focus_entity_id]
+            if evidence_types:
+                marks_e = ",".join("?" * len(evidence_types))
+                focus_filter = f"AND evidence_type IN ({marks_e}) "
+                focus_args = [focus_entity_id, focus_entity_id, *evidence_types]
+                if relation_types:
+                    marks_r = ",".join("?" * len(relation_types))
+                    focus_filter += f"AND relation_type IN ({marks_r}) "
+                    focus_args.extend(relation_types)
+                if not include_rejected:
+                    focus_filter += "AND review_status!='rejected' "
+                focus_edges = rows(
+                    "SELECT source_entity_id, target_entity_id FROM kg_visible_relations "
+                    "WHERE (source_entity_id=? OR target_entity_id=?) "
+                    + focus_filter + "ORDER BY confidence DESC LIMIT 30",
+                    tuple(focus_args))
+                for edge in focus_edges:
+                    ids.extend([edge["source_entity_id"], edge["target_entity_id"]])
+            ids = list(dict.fromkeys(ids))
+    elif entity_ids:
         ids = entity_ids[:200]
     elif paper_id:
         ids = [r["entity_id"] for r in rows(
@@ -82,8 +128,8 @@ def graph(paper_id: str | None = None, entity_ids: list[str] | None = None,
         # 全局视图：按连接度取核心节点（限流渲染），库内论文节点始终保留
         top = rows(
             "SELECT e.id, (SELECT COUNT(*) FROM kg_visible_relations r WHERE "
-            "r.source_entity_id=e.id OR r.target_entity_id=e.id) deg "
-            "FROM kg_visible_entities e ORDER BY deg DESC LIMIT ?", (limit,))
+            "(r.source_entity_id=e.id OR r.target_entity_id=e.id)" + degree_filter + ") deg "
+            "FROM kg_visible_entities e ORDER BY deg DESC LIMIT ?", (*degree_args, limit))
         ids = [r["id"] for r in top]
         papers = rows("SELECT id FROM kg_visible_entities WHERE id LIKE 'paper_%' LIMIT 100")
         ids = list(dict.fromkeys(ids + [p["id"] for p in papers]))
@@ -95,18 +141,33 @@ def graph(paper_id: str | None = None, entity_ids: list[str] | None = None,
     marks = ",".join("?" * len(ids))
     nodes = rows(
         f"SELECT e.id, e.entity_type, e.canonical_name, e.name_zh, e.description, e.metadata_json, "
-        f"(SELECT COUNT(*) FROM kg_visible_relations r WHERE r.source_entity_id=e.id OR "
-        f"r.target_entity_id=e.id) deg FROM kg_visible_entities e WHERE e.id IN ({marks})", ids)
+        f"(SELECT COUNT(*) FROM kg_visible_relations r WHERE "
+        f"(r.source_entity_id=e.id OR r.target_entity_id=e.id){degree_filter}) deg "
+        f"FROM kg_visible_entities e WHERE e.id IN ({marks})", (*degree_args, *ids))
     rel_filter, rel_args = "", []
     if relation_types:
-        rel_filter = " AND r.relation_type IN (" + ",".join("?" * len(relation_types)) + ")"
-        rel_args = list(relation_types)
+        rel_filter += " AND r.relation_type IN (" + ",".join("?" * len(relation_types)) + ")"
+        rel_args.extend(relation_types)
+    if not evidence_types:
+        rel_filter += " AND 1=0"
+    else:
+        rel_filter += " AND r.evidence_type IN (" + ",".join("?" * len(evidence_types)) + ")"
+        rel_args.extend(evidence_types)
+    if not include_rejected:
+        rel_filter += " AND r.review_status!='rejected'"
     edges = rows(
         f"SELECT r.id, r.source_entity_id, r.target_entity_id, r.relation_type, "
-        f"r.evidence_type, r.confidence, "
-        f"(SELECT COUNT(*) FROM kg_visible_evidence ev WHERE ev.relation_id=r.id) ev_count, "
+        f"r.evidence_type, r.confidence, r.review_status, "
+        f"(SELECT COUNT(*) FROM kg_visible_evidence ev WHERE ev.relation_id=r.id AND ev.evidence_type=r.evidence_type) ev_count, "
         f"(SELECT GROUP_CONCAT(DISTINCT paper_id) FROM kg_visible_evidence ev WHERE "
-        f"ev.relation_id=r.id) papers FROM kg_visible_relations r "
+        f"ev.relation_id=r.id AND ev.evidence_type=r.evidence_type) papers, "
+        f"(SELECT ev.evidence_text FROM kg_visible_evidence ev WHERE ev.relation_id=r.id "
+        f"AND ev.evidence_type=r.evidence_type ORDER BY ev.confidence DESC, ev.created_at DESC LIMIT 1) evidence_text, "
+        f"(SELECT ev.section_name FROM kg_visible_evidence ev WHERE ev.relation_id=r.id "
+        f"AND ev.evidence_type=r.evidence_type ORDER BY ev.confidence DESC, ev.created_at DESC LIMIT 1) section_name, "
+        f"(SELECT ev.paper_id FROM kg_visible_evidence ev WHERE ev.relation_id=r.id "
+        f"AND ev.evidence_type=r.evidence_type ORDER BY ev.confidence DESC, ev.created_at DESC LIMIT 1) evidence_paper_id "
+        f"FROM kg_visible_relations r "
         f"WHERE r.source_entity_id IN ({marks}) AND r.target_entity_id IN ({marks})"
         f"{rel_filter}", (*ids, *ids, *rel_args))
     node_set = {n["id"] for n in nodes}
@@ -122,7 +183,11 @@ def graph(paper_id: str | None = None, entity_ids: list[str] | None = None,
         "id": e["id"], "source": e["source_entity_id"], "target": e["target_entity_id"],
         "relation_type": e["relation_type"], "evidence_type": e["evidence_type"],
         "confidence": e["confidence"], "evidence_count": e["ev_count"],
+        "review_status": e["review_status"],
         "paper_ids": (e["papers"] or "").split(",") if e["papers"] else [],
+        "evidence_text": e["evidence_text"] or "",
+        "section_name": e["section_name"] or "",
+        "evidence_paper_id": e["evidence_paper_id"] or "",
     } for e in edges]
     return {"nodes": out_nodes, "edges": out_edges, "total_entities": _total_entities()}
 
@@ -163,10 +228,11 @@ def entity_detail(eid: str) -> dict | None:
         "s.entity_type AS source_type, "
         "t.canonical_name AS target_name, t.name_zh AS target_name_zh, "
         "t.entity_type AS target_type, "
-        "(SELECT COUNT(*) FROM kg_visible_evidence ev WHERE ev.relation_id=r.id) evidence_count "
+        "(SELECT COUNT(*) FROM kg_visible_evidence ev WHERE ev.relation_id=r.id "
+        "AND ev.evidence_type=r.evidence_type) evidence_count "
         "FROM kg_visible_relations r JOIN kg_visible_entities s ON s.id=r.source_entity_id "
         "JOIN kg_visible_entities t ON t.id=r.target_entity_id "
-        "WHERE r.source_entity_id=? OR r.target_entity_id=? "
+        "WHERE (r.source_entity_id=? OR r.target_entity_id=?) AND r.review_status!='rejected' "
         "ORDER BY r.confidence DESC LIMIT 100", (eid, eid))
     import json as _json
     meta = _json.loads(e["metadata_json"] or "{}") or {}
@@ -186,7 +252,7 @@ def neighbors(eid: str, limit: int = 60) -> dict:
         "t.canonical_name AS target_name, t.entity_type AS target_type "
         "FROM kg_visible_relations r JOIN kg_visible_entities s ON s.id=r.source_entity_id "
         "JOIN kg_visible_entities t ON t.id=r.target_entity_id "
-        "WHERE r.source_entity_id=? OR r.target_entity_id=? LIMIT ?", (eid, eid, limit))
+        "WHERE (r.source_entity_id=? OR r.target_entity_id=?) AND r.review_status!='rejected' LIMIT ?", (eid, eid, limit))
     return {"relations": rels}
 
 
@@ -204,6 +270,7 @@ def relation_detail(rid: str) -> dict | None:
     return {
         "id": r["id"], "relation_type": r["relation_type"],
         "evidence_type": r["evidence_type"], "confidence": r["confidence"],
+        "review_status": r["review_status"],
         "source": {"id": r["source_entity_id"], "name": r["source_name"],
                    "name_zh": r["source_name_zh"] or "", "type": r["source_type"]},
         "target": {"id": r["target_entity_id"], "name": r["target_name"],
@@ -226,7 +293,9 @@ def paper_structure(pid: str) -> dict | None:
         "t.description, ev.block_id, ev.evidence_text, ev.section_name "
         "FROM kg_visible_relations r JOIN kg_visible_entities t ON t.id=r.target_entity_id "
         "JOIN kg_visible_evidence ev ON ev.relation_id=r.id "
-        "WHERE ev.paper_id=? ORDER BY r.relation_type, r.confidence DESC", (pid,))
+        "WHERE ev.paper_id=? AND ev.evidence_type='explicit' AND r.evidence_type='explicit' "
+        "AND r.review_status!='rejected' "
+        "ORDER BY r.relation_type, r.confidence DESC", (pid,))
     buckets = {"problems": {"ADDRESSES", "MITIGATES"}, "proposals": {"PROPOSES"},
                "datasets": {"USES", "EVALUATED_ON"}, "models": set(), "metrics": {"USES_METRIC"},
                "findings": {"REPORTS"}, "related": {"COMPARES", "EXTENDS"},
@@ -267,7 +336,7 @@ def topics() -> dict:
         "r.source_entity_id AS paper_entity_id "
         "FROM kg_visible_relations r JOIN kg_visible_entities t ON t.id=r.target_entity_id "
         "JOIN kg_visible_evidence ev ON ev.relation_id=r.id "
-        "WHERE r.relation_type='BELONGS_TO' AND r.evidence_type!='similarity' AND t.entity_type='ResearchArea'")
+        "WHERE r.relation_type='BELONGS_TO' AND r.evidence_type='explicit' AND ev.evidence_type='explicit' AND r.review_status!='rejected' AND t.entity_type='ResearchArea'")
     grouped: dict[str, dict] = {}
     for r in area_rows:
         g = grouped.setdefault(r["area_id"], {"name": r["name"], "papers": set(),
@@ -296,6 +365,7 @@ def topics() -> dict:
                     f"FROM kg_visible_relations r JOIN kg_visible_entities s ON s.id=r.source_entity_id "
                     f"JOIN kg_visible_entities t ON t.id=r.target_entity_id "
                     f"WHERE r.source_entity_id IN ({m2}) AND r.target_entity_id IN ({m2}) "
+                    f"AND r.evidence_type='explicit' AND r.review_status!='rejected' "
                     f"ORDER BY r.confidence DESC LIMIT 15", (*entity_ids, *entity_ids))
         out.append({"name": g["name"], "paper_count": len(papers), "paper_ids": papers,
                     "entity_ids": entity_ids, "key_relations": key_rels})
@@ -306,7 +376,8 @@ def topics() -> dict:
         "GROUP_CONCAT(DISTINCT ev.paper_id) papers "
         "FROM kg_visible_relations r JOIN kg_visible_entities t ON t.id=r.target_entity_id "
         "JOIN kg_visible_evidence ev ON ev.relation_id=r.id "
-        "WHERE r.relation_type='USES' AND t.entity_type='Dataset' "
+        "WHERE r.relation_type='USES' AND r.evidence_type='explicit' AND ev.evidence_type='explicit' "
+        "AND r.review_status!='rejected' AND t.entity_type='Dataset' "
         "GROUP BY t.id HAVING paper_count>=2 ORDER BY paper_count DESC LIMIT 12")
     shared_resources = [{
         "id": d["id"], "name": d["canonical_name"], "paper_count": d["paper_count"],

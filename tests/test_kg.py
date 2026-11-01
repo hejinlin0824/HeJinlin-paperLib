@@ -307,6 +307,8 @@ def test_run_job_success_and_query_paths(kg_db, monkeypatch):
     g = kg_queries.graph(paper_id="p1")
     labels = {n["label"] for n in g["nodes"]}
     assert "FedProx" in labels and any(n["type"] == "Paper" for n in g["nodes"])
+    assert g["edges"] and all(edge["evidence_text"] for edge in g["edges"])
+    assert all(edge["evidence_paper_id"] == "p1" for edge in g["edges"])
 
 
 def test_run_job_failure_keeps_old_graph(kg_db, monkeypatch):
@@ -475,3 +477,123 @@ def test_run_job_marks_failed_when_persist_raises(kg_db, monkeypatch):
     j = app_db.row("SELECT * FROM kg_extraction_jobs WHERE id=?", (job["id"],))
     assert j["status"] == "failed"
     assert "写入图谱失败" in j["error_message"]
+
+
+def test_graph_defaults_to_explicit_evidence_and_can_opt_in_to_inference(kg_db):
+    seed_paper("inferred-only")
+    ents, rels, _ = validate_good()
+    inferred = [r.model_copy(update={"evidence_type": "inferred"}) for r in rels]
+    kg_store.replace_paper_extraction("inferred-only", ents, inferred)
+
+    safe_graph = kg_queries.graph(paper_id="inferred-only")
+    exploratory_graph = kg_queries.graph(
+        paper_id="inferred-only", evidence_types=["inferred"])
+
+    assert safe_graph["nodes"]  # Nodes remain discoverable.
+    assert safe_graph["edges"] == []  # Inference is not silently presented as fact.
+    assert len(exploratory_graph["edges"]) == 3
+
+
+def test_relation_trust_summary_recomputed_after_reextraction(kg_db):
+    seed_paper("explicit-paper")
+    seed_paper("inferred-paper")
+    ents, rels, _ = validate_good()
+    kg_store.replace_paper_extraction("explicit-paper", ents, rels)
+
+    inferred_rels = [
+        r.model_copy(update={
+            "evidence_type": "inferred",
+            "confidence": 0.7,
+        }) for r in rels
+    ]
+    kg_store.replace_paper_extraction("inferred-paper", ents, inferred_rels)
+
+    algorithm = app_db.row(
+        "SELECT id FROM kg_entities WHERE canonical_name='FedProx'")
+    problem = app_db.row(
+        "SELECT id FROM kg_entities WHERE canonical_name='Statistical Heterogeneity'")
+    relation = app_db.row(
+        "SELECT * FROM kg_relations WHERE source_entity_id=? AND target_entity_id=? "
+        "AND relation_type='MITIGATES'",
+        (algorithm["id"], problem["id"]))
+    assert relation["evidence_type"] == "explicit"
+    app_db.ex("UPDATE kg_relations SET review_status='verified' WHERE id=?",
+              (relation["id"],))
+
+    # The explicit source is re-extracted and no longer asserts MITIGATES.
+    kg_store.replace_paper_extraction(
+        "explicit-paper", ents,
+        [r for r in rels if r.relation_type != "MITIGATES"])
+
+    relation = app_db.row("SELECT * FROM kg_relations WHERE id=?", (relation["id"],))
+    assert relation["evidence_type"] == "inferred"
+    assert relation["confidence"] == pytest.approx(0.7)
+    assert relation["review_status"] == "unreviewed"
+
+
+def test_schema_rejects_inferred_relation_even_when_quote_exists(kg_db):
+    data = dict(LLM_GOOD)
+    data["entities"] = list(LLM_GOOD["entities"])
+    data["relations"] = [dict(item) for item in LLM_GOOD["relations"]]
+    data["relations"][1]["evidence_type"] = "inferred"
+    block_map = {i + 1: t for i, t in enumerate(BLOCKS)}
+
+    entities, relations, warnings = kg_schema.validate_extraction(data, block_map, "")
+
+    assert entities
+    assert all(r.relation_type != "MITIGATES" for r in relations)
+    assert any("不是原文明示" in warning for warning in warnings)
+
+
+def test_rejected_relations_are_hidden_but_recoverable(kg_db):
+    seed_paper("review-paper")
+    _store_good("review-paper")
+    relation = app_db.row(
+        "SELECT id FROM kg_relations WHERE relation_type='MITIGATES'")
+    app_db.ex("UPDATE kg_relations SET review_status='rejected' WHERE id=?",
+              (relation["id"],))
+
+    normal = kg_queries.graph(paper_id="review-paper")
+    with_rejected = kg_queries.graph(
+        paper_id="review-paper", include_rejected=True)
+
+    assert len(normal["edges"]) == 2
+    assert len(with_rejected["edges"]) == 3
+    rejected = next(e for e in with_rejected["edges"] if e["id"] == relation["id"])
+    assert rejected["review_status"] == "rejected"
+
+
+def test_relation_review_state_migrates_as_unreviewed(kg_db):
+    relation_cols = {
+        r["name"] for r in app_db.rows("PRAGMA table_info(kg_relations)")
+    }
+    assert "review_status" in relation_cols
+
+
+def test_overview_reports_manual_review_coverage(kg_db):
+    seed_paper("review-counts")
+    _store_good("review-counts")
+    relation_ids = app_db.rows("SELECT id FROM kg_relations ORDER BY id")
+    app_db.ex("UPDATE kg_relations SET review_status='verified' WHERE id=?",
+              (relation_ids[0]["id"],))
+    app_db.ex("UPDATE kg_relations SET review_status='rejected' WHERE id=?",
+              (relation_ids[1]["id"],))
+
+    review = kg_queries.overview()["relation_review"]
+    assert review["verified"] == 1
+    assert review["rejected"] == 1
+    assert review["unreviewed"] == 1
+
+
+def test_focus_graph_is_bounded_to_one_hop_neighbours(kg_db):
+    seed_paper("focus-paper")
+    _store_good("focus-paper")
+    algorithm = app_db.row(
+        "SELECT id FROM kg_entities WHERE canonical_name='FedProx'")
+    focused = kg_queries.graph(focus_entity_id=algorithm["id"])
+
+    node_ids = {node["id"] for node in focused["nodes"]}
+    assert algorithm["id"] in node_ids
+    assert len(node_ids) <= 31
+    assert focused["edges"]
+    assert kg_queries.graph(focus_entity_id="missing-entity")["nodes"] == []

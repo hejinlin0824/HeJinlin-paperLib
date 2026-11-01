@@ -10,6 +10,12 @@
 
 要求：Python 3.10+、Node.js 18+。
 
+启动前会只读检查 `data/library.db` 与 `data/papers/`，并显示数据库实际路径、论文记录数和知识图谱纳入数量。如果数据库缺失/论文数为 0、但论文文件夹仍有内容，启动会被保护性中止；这时不要删除 `data/`，先备份整个目录并检查提示的数据库路径。诊断脚本也可单独运行：
+
+```powershell
+.\.venv\Scripts\python.exe tools\check_library.py
+```
+
 ## 第一次使用
 
 1. 打开 **设置** 页，配置翻译引擎：

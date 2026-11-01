@@ -251,6 +251,11 @@ def _migrate(c):
     kg_cols = {r[1] for r in c.execute("PRAGMA table_info(kg_entities)")}
     if "name_zh" not in kg_cols:
         c.execute("ALTER TABLE kg_entities ADD COLUMN name_zh TEXT DEFAULT ''")
+    relation_cols = {r[1] for r in c.execute("PRAGMA table_info(kg_relations)")}
+    if "review_status" not in relation_cols:
+        c.execute(
+            "ALTER TABLE kg_relations ADD COLUMN review_status TEXT NOT NULL DEFAULT 'unreviewed'"
+        )
 
 
 def _create_kg_views(c):
@@ -275,7 +280,7 @@ def _create_kg_views(c):
              END AS evidence_type,
              COALESCE((SELECT MAX(ev.confidence) FROM kg_visible_evidence ev
                        WHERE ev.relation_id=r.id), 0.5) AS confidence,
-             r.status, r.created_by_paper, r.created_at
+             r.status, r.review_status, r.created_by_paper, r.created_at
       FROM kg_relations r
       WHERE EXISTS (SELECT 1 FROM kg_visible_evidence ev WHERE ev.relation_id=r.id);
     CREATE VIEW kg_visible_entities AS
