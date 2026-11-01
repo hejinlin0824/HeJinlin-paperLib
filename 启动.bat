@@ -26,10 +26,18 @@ if not exist ".venv\Scripts\python.exe" (
   echo [1/5] Python virtual environment found.
 )
 
+rem 2.5) Read-only safety check: never start against a suspicious empty database.
+echo [SAFE] Checking the existing paper library (read-only)...
+".venv\\Scripts\\python.exe" tools\\check_library.py
+if errorlevel 1 goto :err_library
+
 rem 3) Synchronize backend dependencies.
 echo [2/5] Checking backend dependencies...
 ".venv\Scripts\python.exe" -m pip install -q -r backend\requirements.txt
-if errorlevel 1 goto :err_backend_deps
+if errorlevel 1 goto :err_library
+echo [ERROR] Library integrity check failed. No database or paper files were changed.
+goto :fail
+:err_backend_deps
 
 rem 4) Ensure frontend dependencies exist, then ALWAYS build the production frontend.
 rem     Do not trust an old frontend\dist\index.html: it may belong to an older checkout.
