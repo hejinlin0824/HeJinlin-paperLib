@@ -35,10 +35,18 @@ def overview() -> dict:
 
 def graph(paper_id: str | None = None, entity_ids: list[str] | None = None,
           types: list[str] | None = None, relation_types: list[str] | None = None,
+          evidence_types: list[str] | None = None,
           q: str | None = None, limit: int = 250) -> dict:
+    """Query a graph. By default only source-explicit relations are shown.
+
+    Inferred and similarity edges are opt-in because they are hypotheses, not facts.
+    """
     limit = max(20, min(int(limit or 250), MAX_NODES))
     types = [t for t in (types or []) if t in ENTITY_TYPES] or None
     relation_types = relation_types or None
+    allowed_evidence = {"explicit", "inferred", "similarity"}
+    evidence_types = (["explicit"] if evidence_types is None else
+                      [t for t in evidence_types if t in allowed_evidence])
     ids: list[str] = []
 
     def _type_filter(selected: list[str]) -> list[str]:
@@ -99,8 +107,13 @@ def graph(paper_id: str | None = None, entity_ids: list[str] | None = None,
         f"r.target_entity_id=e.id) deg FROM kg_visible_entities e WHERE e.id IN ({marks})", ids)
     rel_filter, rel_args = "", []
     if relation_types:
-        rel_filter = " AND r.relation_type IN (" + ",".join("?" * len(relation_types)) + ")"
-        rel_args = list(relation_types)
+        rel_filter += " AND r.relation_type IN (" + ",".join("?" * len(relation_types)) + ")"
+        rel_args.extend(relation_types)
+    if not evidence_types:
+        rel_filter += " AND 1=0"
+    else:
+        rel_filter += " AND r.evidence_type IN (" + ",".join("?" * len(evidence_types)) + ")"
+        rel_args.extend(evidence_types)
     edges = rows(
         f"SELECT r.id, r.source_entity_id, r.target_entity_id, r.relation_type, "
         f"r.evidence_type, r.confidence, "
