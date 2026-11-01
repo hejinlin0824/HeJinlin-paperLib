@@ -1,11 +1,11 @@
 <script setup>
 // 科研知识关系图：以实体类别组织空间，以真实关系表达知识联系。
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import * as SigmaPkg from 'sigma'
 import Graph from 'graphology'
 import api from '../api'
 import { groupRelationsByEndpoints } from '../utils/graphEdges'
-import { computeCameraFit, computeSemanticLayout } from '../utils/graphLayout'
+import { computeCameraFit, computeSemanticLayout, toFramedCameraPoint } from '../utils/graphLayout'
 import { toast } from '../stores'
 
 const Sigma = SigmaPkg.default ?? SigmaPkg.Sigma
@@ -71,6 +71,8 @@ let hoveredEdge = null
 let focusNode = ''
 let layoutBounds = null
 let fullViewMode = false
+// Only the newest graph request may mutate the shared Sigma graph.
+let graphRequestSequence = 0
 
 function fitCamera({ full = false, duration = 250 } = {}) {
   if (!renderer || !graph || !graph.order) return
@@ -90,8 +92,15 @@ function fitCamera({ full = false, duration = 250 } = {}) {
     { padding: 90, minRatio: 0.06, maxRatio: 40 },
   )
   // 默认视图优先保持节点可辨；“适配全图”按钮完整适配整个边界框。
-  const ratio = full ? fit.ratio : Math.min(fit.ratio, 1.6)
-  renderer.getCamera().animate({ ...fit, ratio, angle: 0 }, { duration })
+  // Sigma autoRescale already maps the complete graph extent into framedGraph.
+  // Camera ratio is a zoom multiplier in that normalized space, NOT graph units / pixels.
+  // 1 fits the complete graph; values above 1 zoom out and below 1 zoom in.
+  const ratio = full ? 1 : 0.95
+  // Sigma v3 camera x/y live in normalized framed-graph space (roughly 0..1),
+  // while layout positions and computeCameraFit centers are in raw graph space.
+  // Convert explicitly or large semantic-lane coordinates move the camera off-canvas.
+  const cameraCenter = toFramedCameraPoint(renderer, { x: fit.x, y: fit.y })
+  renderer.getCamera().animate({ ...cameraCenter, ratio, angle: 0 }, { duration })
 }
 
 function renderGraph(data) {
@@ -141,6 +150,10 @@ function renderGraph(data) {
       _relationCount: relations.length,
     })
   }
+  // Graphology mutations are observed by Sigma, but an explicit refresh makes the
+  // first frame deterministic after a hidden -> visible container transition.
+  renderer.resize(true)
+  renderer.refresh()
   // Expose the completed layout (not the previous graph state) for acceptance diagnostics.
   window.__kgLastRender = {
     nodes: visible.length, edges: shownEdges.length,
@@ -153,28 +166,37 @@ function renderGraph(data) {
   fitCamera({ full: false, duration: focusNode ? 0 : 250 })
   if (focusNode && graph.hasNode(focusNode)) {
     const a = graph.getNodeAttributes(focusNode)
-    renderer.getCamera().animate({ x: a.x, y: a.y, ratio: 0.28 }, { duration: 350 })
+    const cameraCenter = toFramedCameraPoint(renderer, { x: a.x, y: a.y })
+    renderer.getCamera().animate({ ...cameraCenter, ratio: 0.28 }, { duration: 350 })
     focusNode = ''
   }
 }
 
 async function loadGraph() {
+  const requestId = ++graphRequestSequence
   loading.value = true
   try {
+    // switchView changes v-show first; wait until Vue has made the canvas measurable.
+    await nextTick()
+    // A newer filter/view action may have started while Vue was updating the DOM.
+    if (requestId !== graphRequestSequence || view.value !== 'global') return
     const params = {}
-    if (view.value === 'global') {
-      if (selPaper.value) params.paper_id = selPaper.value
-      else if (q.value.trim()) params.q = q.value.trim()
-      const ts = [...activeTypes.value]
-      if (ts.length) params.types = ts.join(',')
-      if (selRelation.value) params.relation_types = selRelation.value
-    }
-    renderGraph(await api.kgGraph(params))
+    if (selPaper.value) params.paper_id = selPaper.value
+    else if (q.value.trim()) params.q = q.value.trim()
+    const ts = [...activeTypes.value]
+    if (ts.length) params.types = ts.join(',')
+    if (selRelation.value) params.relation_types = selRelation.value
+
+    const data = await api.kgGraph(params)
+    // Never let a slower, stale response replace the latest graph with old/empty data.
+    if (requestId !== graphRequestSequence || view.value !== 'global') return
+    renderGraph(data)
   } catch (e) {
+    if (requestId !== graphRequestSequence) return
     window.__kgGraphError = String(e?.stack || e)
     toast('图谱加载失败：' + e.message, 'err')
   } finally {
-    loading.value = false
+    if (requestId === graphRequestSequence) loading.value = false
   }
 }
 
@@ -201,17 +223,29 @@ async function openTopics() {
 }
 
 async function pickTopic(t) {
+  const requestId = ++graphRequestSequence
   activeTopic.value = t
   panel.value = { kind: 'topic', topic: t }
   loading.value = true
   try {
-    renderGraph(await api.kgGraph({ entity_ids: t.entity_ids.join(',') }))
+    await nextTick()
+    const data = await api.kgGraph({ entity_ids: t.entity_ids.join(',') })
+    if (requestId !== graphRequestSequence || view.value !== 'topics' || activeTopic.value !== t) return
+    renderGraph(data)
+  } catch (e) {
+    if (requestId === graphRequestSequence) {
+      window.__kgGraphError = String(e?.stack || e)
+      toast('主题图谱加载失败：' + e.message, 'err')
+    }
   } finally {
-    loading.value = false
+    if (requestId === graphRequestSequence) loading.value = false
   }
 }
 
 function switchView(v) {
+  // Invalidate pending responses before changing which view owns the graph canvas.
+  graphRequestSequence += 1
+  loading.value = false
   view.value = v
   panel.value = { kind: 'empty' }
   activeTopic.value = null
@@ -324,17 +358,21 @@ function onSearch() {
 }
 
 function onGraphResize() {
+  if (renderer) renderer.resize(true)
   fitCamera({ full: fullViewMode, duration: 150 })
 }
 
 function ensureRenderer() {
-  // 惰性初始化：默认视图是"知识总览"，画布容器在 v-show 下 display:none（宽度 0），
-  // Sigma 构造时会抛 "Container has no width"。因此只在第一次真正渲染图时创建；
-  // allowInvalidContainer 兜底极端时序（refresh 时会重新量测容器尺寸）。
+  // 默认视图是"知识总览"，画布在 v-show 下不可见。loadGraph 会先 nextTick，
+  // 确保切换到关系探索后容器已经有真实尺寸，再创建 Sigma。
   if (renderer) return
+  const container = document.getElementById('kg-canvas')
+  const rect = container?.getBoundingClientRect()
+  if (!container || !rect || rect.width <= 0 || rect.height <= 0) {
+    throw new Error(`知识图谱画布尺寸无效：${rect?.width || 0}×${rect?.height || 0}`)
+  }
   graph = new Graph()
-  renderer = new Sigma(graph, document.getElementById('kg-canvas'), {
-    allowInvalidContainer: true,
+  renderer = new Sigma(graph, container, {
     enableEdgeEvents: true,
     minCameraRatio: 0.06,
     maxCameraRatio: 40,

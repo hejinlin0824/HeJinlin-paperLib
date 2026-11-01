@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { computeCameraFit, computeSemanticLayout } from '../src/utils/graphLayout.js'
+import { computeCameraFit, computeSemanticLayout, toFramedCameraPoint } from '../src/utils/graphLayout.js'
 const nodes = (type, count, prefix = type) => Array.from({ length: count }, (_, i) => ({
   id: prefix + '-' + i, type, degree: count - i,
   label_zh: i === 0 ? 'Generalizability in LLM-based Agents' : '研究概念' + i,
@@ -40,10 +40,20 @@ test('empty graph returns safe bounds and camera defaults', () => {
   assert.deepEqual(computeSemanticLayout([]).bounds, null)
   assert.deepEqual(computeCameraFit(null, { width: 0, height: 0 }), { x: 0, y: 0, ratio: 1 })
 })
-test('fit-all camera centers non-origin bounds and includes both dimensions', () => {
+test('fit-all camera uses Sigma normalized-space fit ratio, independent of graph units and viewport pixels', () => {
   const fit = computeCameraFit({ minX: 1000, maxX: 5000, minY: -400, maxY: 400 },
     { width: 1000, height: 600 }, { padding: 50 })
+  const scaled = computeCameraFit({ minX: 1e6, maxX: 5e6, minY: -4e5, maxY: 4e5 },
+    { width: 320, height: 180 }, { padding: 900 })
   assert.equal(fit.x, 3000)
   assert.equal(fit.y, 0)
-  assert.equal(fit.ratio, 4.1)
+  assert.equal(fit.ratio, 1)
+  assert.equal(scaled.ratio, 1)
+})
+
+test('camera targets convert graph-space centers into Sigma framed-graph coordinates', () => {
+  const renderer = { graphToFramedGraph: ({ x, y }) => ({ x: (x - 1000) / 4000, y: (y + 400) / 800 }) }
+  assert.deepEqual(toFramedCameraPoint(renderer, { x: 3000, y: 0 }), { x: 0.5, y: 0.5 })
+  assert.deepEqual(toFramedCameraPoint(null, { x: 3000, y: 0 }), { x: 0.5, y: 0.5 })
+  assert.deepEqual(toFramedCameraPoint({ graphToFramedGraph: () => ({ x: NaN, y: 2 }) }, {}), { x: 0.5, y: 0.5 })
 })
