@@ -1,9 +1,11 @@
+import io
 import sqlite3
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+from tools import check_library
 from tools.check_library import inspect_library
 
 
@@ -43,3 +45,10 @@ def test_existing_library_database_is_allowed(tmp_path):
     report = inspect_library(tmp_path)
     assert report["safe_to_start"] is True
     assert report["paper_records"] == 1
+
+
+def test_diagnostics_do_not_crash_on_legacy_windows_console_encoding(tmp_path, monkeypatch):
+    monkeypatch.setattr(check_library, "ROOT", tmp_path)
+    stdout = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")
+    monkeypatch.setattr(sys, "stdout", stdout)
+    assert check_library.main() == 0
