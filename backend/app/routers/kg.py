@@ -19,6 +19,7 @@ def graph(paper_id: str | None = Query(None),
           types: str | None = Query(None, description="逗号分隔的实体类型"),
           relation_types: str | None = Query(None, description="逗号分隔的关系类型"),
           evidence_types: str | None = Query("explicit", description="证据类型：explicit/inferred/similarity；默认仅原文明确证据"),
+          include_rejected: bool = Query(False, description="是否显示已人工驳回的关系"),
           q: str | None = Query(None, max_length=120),
           limit: int = Query(250, ge=20, le=400)):
     return kg_queries.graph(
@@ -27,7 +28,7 @@ def graph(paper_id: str | None = Query(None),
         types=[x for x in (types or "").split(",") if x] or None,
         relation_types=[x for x in (relation_types or "").split(",") if x] or None,
         evidence_types=[x for x in (evidence_types or "").split(",") if x],
-        q=q, limit=limit)
+        include_rejected=include_rejected, q=q, limit=limit)
 
 
 @router.get("/entities")
@@ -79,6 +80,18 @@ def entity_neighbors(eid: str, limit: int = Query(60, ge=10, le=120)):
     if not row("SELECT id FROM kg_visible_entities WHERE id=?", (eid,)):
         raise HTTPException(404, "实体不存在")
     return kg_queries.neighbors(eid, limit)
+
+
+@router.patch("/relations/{rid}/review")
+def review_relation(rid: str, body: dict = Body(...)):
+    """人工确认/驳回关系；只修改审核状态，不删除原文证据。"""
+    status = str(body.get("review_status") or "").strip().lower()
+    if status not in {"unreviewed", "verified", "rejected"}:
+        raise HTTPException(400, "review_status 必须是 unreviewed、verified 或 rejected")
+    if not row("SELECT id FROM kg_visible_relations WHERE id=?", (rid,)):
+        raise HTTPException(404, "关系不存在")
+    ex("UPDATE kg_relations SET review_status=? WHERE id=?", (status, rid))
+    return {"id": rid, "review_status": status}
 
 
 @router.get("/relations/{rid}")
