@@ -6,7 +6,6 @@
 // 4) 背景深空+星云+星野，给星点留呼吸感。
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import * as SigmaPkg from 'sigma'
-import { NodePointProgram } from 'sigma/rendering'
 import Graph from 'graphology'
 import api from '../api'
 import { groupRelationsByEndpoints } from '../utils/graphEdges'
