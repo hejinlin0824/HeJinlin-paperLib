@@ -251,6 +251,11 @@ def _migrate(c):
     kg_cols = {r[1] for r in c.execute("PRAGMA table_info(kg_entities)")}
     if "name_zh" not in kg_cols:
         c.execute("ALTER TABLE kg_entities ADD COLUMN name_zh TEXT DEFAULT ''")
+    relation_cols = {r[1] for r in c.execute("PRAGMA table_info(kg_relations)")}
+    if "review_status" not in relation_cols:
+        c.execute(
+            "ALTER TABLE kg_relations ADD COLUMN review_status TEXT NOT NULL DEFAULT 'unreviewed'"
+        )
 
 
 def _create_kg_views(c):
