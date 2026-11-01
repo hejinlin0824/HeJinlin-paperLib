@@ -18,6 +18,7 @@ def graph(paper_id: str | None = Query(None),
           entity_ids: str | None = Query(None, description="逗号分隔的实体 id"),
           types: str | None = Query(None, description="逗号分隔的实体类型"),
           relation_types: str | None = Query(None, description="逗号分隔的关系类型"),
+          evidence_types: str | None = Query("explicit", description="证据类型：explicit/inferred/similarity；默认仅原文明确证据"),
           q: str | None = Query(None, max_length=120),
           limit: int = Query(250, ge=20, le=400)):
     return kg_queries.graph(
@@ -25,6 +26,7 @@ def graph(paper_id: str | None = Query(None),
         entity_ids=[x for x in (entity_ids or "").split(",") if x] or None,
         types=[x for x in (types or "").split(",") if x] or None,
         relation_types=[x for x in (relation_types or "").split(",") if x] or None,
+        evidence_types=[x for x in (evidence_types or "").split(",") if x],
         q=q, limit=limit)
 
 
