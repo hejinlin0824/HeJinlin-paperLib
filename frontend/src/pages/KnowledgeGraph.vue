@@ -70,9 +70,11 @@ let hoveredNeighbors = new Set()
 let hoveredEdge = null
 let focusNode = ''
 let layoutBounds = null
+let fullViewMode = false
 
 function fitCamera({ full = false, duration = 250 } = {}) {
   if (!renderer || !graph || !graph.order) return
+  fullViewMode = full
   const el = renderer.getContainer()
   const fitBounds = layoutBounds || (() => {
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
@@ -321,6 +323,10 @@ function onSearch() {
   loadGraph()
 }
 
+function onGraphResize() {
+  fitCamera({ full: fullViewMode, duration: 150 })
+}
+
 function ensureRenderer() {
   // 惰性初始化：默认视图是"知识总览"，画布容器在 v-show 下 display:none（宽度 0），
   // Sigma 构造时会抛 "Container has no width"。因此只在第一次真正渲染图时创建；
@@ -422,6 +428,7 @@ function ensureRenderer() {
 }
 
 onMounted(async () => {
+  window.addEventListener('resize', onGraphResize)
   try {
     await Promise.all([loadOverview(), openTopics()])
     papers.value = await api.papers().catch(() => [])
@@ -434,6 +441,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  window.removeEventListener('resize', onGraphResize)
   if (jobsTimer.value) clearInterval(jobsTimer.value)
   if (renderer) { renderer.kill(); renderer = null }
 })
