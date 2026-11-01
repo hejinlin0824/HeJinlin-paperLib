@@ -41,19 +41,19 @@ const REL_ZH = {
 const REL_OPTIONS = Object.keys(REL_ZH)
 
 const TYPE_STYLE = {
-  Paper: { color: '#7db4ff', zh: '论文' },
-  Algorithm: { color: '#5fd99a', zh: '算法' },
-  ResearchProblem: { color: '#ff8177', zh: '研究问题' },
-  Dataset: { color: '#ffb35c', zh: '数据集' },
-  Model: { color: '#b39aff', zh: '模型' },
-  Metric: { color: '#ffd166', zh: '指标' },
-  Concept: { color: '#63d8d3', zh: '概念' },
-  Finding: { color: '#f478b8', zh: '发现' },
-  ResearchArea: { color: '#3fdca4', zh: '领域' },
-  Author: { color: '#9aa7b8', zh: '作者人名' },
-  Venue: { color: '#d2a86e', zh: '期刊会议' },
-  Task: { color: '#82abff', zh: '任务' },
-  Institution: { color: '#8b93a0', zh: '机构' },
+  Paper: { color: '#365f8d', zh: '论文' },
+  Algorithm: { color: '#3f806b', zh: '算法' },
+  ResearchProblem: { color: '#b65d56', zh: '研究问题' },
+  Dataset: { color: '#a87535', zh: '数据集' },
+  Model: { color: '#7761a8', zh: '模型' },
+  Metric: { color: '#9b8139', zh: '指标' },
+  Concept: { color: '#3d8384', zh: '概念' },
+  Finding: { color: '#a45d83', zh: '发现' },
+  ResearchArea: { color: '#4f8568', zh: '领域' },
+  Author: { color: '#718096', zh: '作者人名' },
+  Venue: { color: '#9a7b55', zh: '期刊会议' },
+  Task: { color: '#587ca5', zh: '任务' },
+  Institution: { color: '#718096', zh: '机构' },
 }
 const EVI_LABEL = { explicit: '原文', inferred: '推断', similarity: '相似' }
 
@@ -271,6 +271,15 @@ async function openRelation(rid) {
   } catch { /* ignore */ }
 }
 
+async function openRelationGroup(rids) {
+  try {
+    const relations = await Promise.all(rids.map(rid => api.kgRelation(rid)))
+    panel.value = { kind: 'relationGroup', relations: relations.filter(Boolean) }
+  } catch (e) {
+    toast('关系详情加载失败：' + e.message, 'err')
+  }
+}
+
 async function onNodeTap(id) {
   try {
     panel.value = { kind: 'entity', d: await api.kgEntity(id) }
@@ -420,7 +429,7 @@ function ensureRenderer() {
   renderer.on('clickEdge', ({ edge }) => {
     const rids = graph.getEdgeAttribute(edge, '_rids') || []
     if (rids.length === 1) openRelation(rids[0])
-    else if (rids.length > 1) panel.value = { kind: 'relationGroup', rids }
+    else if (rids.length > 1) openRelationGroup(rids)
   })
   renderer.on('enterNode', ({ node }) => {
     hoveredNode = node
@@ -647,6 +656,24 @@ onBeforeUnmount(() => {
           </div>
         </template>
 
+        <!-- 同一对实体之间的多种关系：保留每条原始关系和证据入口 -->
+        <template v-else-if="panel.kind === 'relationGroup'">
+          <div class="p-head">
+            <span class="badge">多重关系</span>
+            <h3>这两个知识点之间有 {{ panel.relations.length }} 种关系</h3>
+            <p class="p-desc">图中将同一对节点的连线合并显示，以避免重叠；这里仍保留每条关系的独立语义和原文证据。</p>
+          </div>
+          <div class="p-sec">
+            <div v-for="r in panel.relations" :key="r.id" class="rel-item relation-group-item" @click="openRelation(r.id)">
+              <span class="rel-dir">
+                <b class="rel-type" :class="{ inf: r.evidence_type !== 'explicit' }">{{ REL_ZH[r.relation_type] || r.relation_type }}</b>
+                <small>{{ EVI_LABEL[r.evidence_type] || r.evidence_type }} · {{ r.evidence.length }} 条证据</small>
+              </span>
+              <span>查看证据 ›</span>
+            </div>
+          </div>
+        </template>
+
         <!-- 主题详情 -->
         <template v-else-if="panel.kind === 'topic'">
           <div class="p-head"><h3>{{ panel.topic.name_zh || panel.topic.name }}</h3>
@@ -834,5 +861,45 @@ onBeforeUnmount(() => {
   .kg-paper-row { align-items:flex-start; flex-direction:column; }
   .kg-scope-select { width:100%; }
 }
+
+
+/* Clean research workspace: remove decorative galaxy effects and prioritize legibility. */
+.kg-canvas-wrap {
+  background:
+    linear-gradient(rgba(94,116,142,.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(94,116,142,.045) 1px, transparent 1px),
+    linear-gradient(180deg,#fbfcfe 0%,#f4f7fb 100%);
+  background-size:32px 32px,32px 32px,auto;
+  border:1px solid #d8e1eb;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.9),0 8px 24px rgba(35,55,80,.06);
+}
+.nebula,.kg-canvas-wrap::before,.kg-canvas-wrap::after { display:none !important; }
+.kg-panel {
+  background:#fff;
+  color:#253449;
+  border:1px solid #dbe3ec;
+  box-shadow:0 8px 24px rgba(35,55,80,.06);
+}
+.kg-panel .muted { color:#718096 !important; }
+.p-head h3 { color:#1e293b; }
+.p-desc { color:#526174; }
+.p-alias { color:#718096; }
+.p-sec h4 { color:#68788c; }
+.rel-item { color:#334155; }
+.rel-item:hover { background:#f1f5f9; }
+.ev-item { border-left-color:#8ca5bf; background:#f8fafc; border-radius:0 7px 7px 0; }
+.ev-meta { color:#718096; }
+.ev-paper { color:#334b66; }
+.ev-text { color:#334155; }
+.ev-jump { color:#315f8b !important; }
+.kg-legend { color:#526174; background:rgba(255,255,255,.9); border:1px solid #dbe3ec; border-radius:8px; padding:7px 10px; }
+.kg-tip { color:#526174; background:rgba(255,255,255,.94); border:1px solid #dbe3ec; }
+.lg-line { border-top-color:#6887a8; }
+.lg-line.inf { border-top-color:#c47a43; }
+.lg-line.sim { border-top-color:#8064a9; }
+.relation-group-item { border:1px solid #e5ebf2; border-radius:8px; margin:8px 0; padding:12px; }
+.relation-group-item small { display:block; color:#718096; margin-top:4px; }
+.relation-group-item > span:last-child { color:#42698f; font-size:12px; white-space:nowrap; }
+.kg-panel-hint { color:#526174; }
 
 </style>
