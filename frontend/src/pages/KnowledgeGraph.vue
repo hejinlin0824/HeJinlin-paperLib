@@ -1,19 +1,52 @@
 <script setup>
-// 知识图谱 · 银河视图：深空星野里每篇论文是一颗"恒星"，它的方法/数据集/问题像行星一样
-// 环绕成簇；连线是星座般的微光，悬停即点亮邻居关系。标签优先中文（抽取后自动批量翻译缓存）。
+// 知识星图 · 银河视图（sigma.js WebGL 渲染）
+// 设计参照真实星图/星系可视化的通用做法（3d-force-graph / sigma showcase）：
+// 1) 星点=径向渐变发光 sprite（运行时 canvas 生成），绝不是实心圆+方形光圈；
+// 2) 连线 1px 极淡如星座，只有悬停时点亮；3) 标签只留给"恒星"（论文）和悬停星体；
+// 4) 背景深空+星云+星野，给星点留呼吸感。
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import cytoscape from 'cytoscape'
+import * as SigmaPkg from 'sigma'
+import { NodePointProgram } from 'sigma/rendering'
+import Graph from 'graphology'
 import api from '../api'
 import { toast } from '../stores'
 
+const Sigma = SigmaPkg.default ?? SigmaPkg.Sigma
+
+// ---------- 自定义"星光"着色器：中心白热 → 类型色 → 透明衰减（参考真实星图的
+// additive glow 做法；替代实心圆/贴图方案，纯 WebGL 程序无贴图加载） ----------
+const GLOW_FRAGMENT = `
+precision mediump float;
+varying vec4 v_color;
+varying float v_border;
+void main(void) {
+  #ifdef PICKING_MODE
+  gl_FragColor = v_color;
+  #else
+  float dist = length(gl_PointCoord - vec2(0.5, 0.5)) * 2.0;
+  float falloff = pow(max(0.0, 1.0 - dist), 1.8);
+  vec3 core = mix(v_color.rgb, vec3(1.0), pow(max(0.0, 1.0 - dist), 3.0) * 0.85);
+  // sigma 用预乘 alpha 混合（blendFunc(ONE, ONE_MINUS_SRC_ALPHA)），RGB 必须乘 alpha
+  gl_FragColor = vec4(core * falloff, v_color.a * falloff);
+  #endif
+}
+`
+
+class GlowNodeProgram extends NodePointProgram {
+  getDefinition() {
+    const def = super.getDefinition()
+    return { ...def, FRAGMENT_SHADER_SOURCE: GLOW_FRAGMENT }
+  }
+}
+
 const overview = ref(null)
 const papers = ref([])
-const view = ref('global')            // global | topics
-const selPaper = ref('')              // 单篇聚焦
+const view = ref('global')
+const selPaper = ref('')
 const q = ref('')
 const activeTypes = ref(new Set())
 const selRelation = ref('')
-const showDust = ref(false)           // 是否显示无连线的"星尘"实体
+const showDust = ref(false)
 const graphData = ref(null)
 const loading = ref(false)
 const panel = ref({ kind: 'empty' })
@@ -33,18 +66,18 @@ const REL_ZH = {
 const REL_OPTIONS = Object.keys(REL_ZH)
 
 const TYPE_STYLE = {
-  Paper: { color: '#6aa9ff', zh: '论文' },
-  Algorithm: { color: '#57d98a', zh: '算法' },
-  ResearchProblem: { color: '#ff7a6e', zh: '研究问题' },
-  Dataset: { color: '#ffb454', zh: '数据集' },
-  Model: { color: '#a78bfa', zh: '模型' },
+  Paper: { color: '#7db4ff', zh: '论文' },
+  Algorithm: { color: '#5fd99a', zh: '算法' },
+  ResearchProblem: { color: '#ff8177', zh: '研究问题' },
+  Dataset: { color: '#ffb35c', zh: '数据集' },
+  Model: { color: '#b39aff', zh: '模型' },
   Metric: { color: '#ffd166', zh: '指标' },
-  Concept: { color: '#5fd4d0', zh: '概念' },
-  Finding: { color: '#f472b6', zh: '发现' },
-  ResearchArea: { color: '#34d399', zh: '领域' },
+  Concept: { color: '#63d8d3', zh: '概念' },
+  Finding: { color: '#f478b8', zh: '发现' },
+  ResearchArea: { color: '#3fdca4', zh: '领域' },
   Author: { color: '#9aa7b8', zh: '作者人名' },
-  Venue: { color: '#c9a26b', zh: '期刊会议' },
-  Task: { color: '#7aa5f8', zh: '任务' },
+  Venue: { color: '#d2a86e', zh: '期刊会议' },
+  Task: { color: '#82abff', zh: '任务' },
   Institution: { color: '#8b93a0', zh: '机构' },
 }
 const EVI_LABEL = { explicit: '原文', inferred: '推断', similarity: '相似' }
@@ -55,11 +88,8 @@ const presentTypes = computed(() => {
     .map(([t, n]) => ({ t, n, ...(TYPE_STYLE[t] || { color: '#9aa7b8', zh: t }) }))
 })
 
-let cy = null
-
-// ---------- 银河布局：论文=恒星放内环，它的实体按最近归属绕成旋臂；孤岛实体撒外圈星尘 ----------
+// ---------- 银河布局：论文=恒星内环，实体按最近归属绕成黄金角旋臂，孤岛撒星尘 ----------
 function galaxyPositions(nodes, edges) {
-  const byId = Object.fromEntries(nodes.map(n => [n.id, n]))
   const adj = {}
   edges.forEach(e => {
     (adj[e.source] ||= new Set()).add(e.target);
@@ -76,22 +106,19 @@ function galaxyPositions(nodes, edges) {
     })
   }
   const pos = {}
-  const GA = 2.399963  // 黄金角，旋臂自然散开
+  const GA = 2.399963
   papers.forEach((p, k) => {
     const angle = (k * 2 * Math.PI) / Math.max(1, papers.length) - Math.PI / 2
     const R = 300
     const px = Math.cos(angle) * R, py = Math.sin(angle) * R * 0.72
     pos[p.id] = { x: px, y: py }
-    const members = nodes.filter(n => owner[n.id] === p.id && n.id !== p.id)
-    members.forEach((m, j) => {
+    nodes.filter(n => owner[n.id] === p.id && n.id !== p.id).forEach((m, j) => {
       const a = angle + j * GA
       const r = 66 + Math.sqrt(j) * 42
       pos[m.id] = { x: px + Math.cos(a) * r, y: py + Math.sin(a) * r * 0.8 }
     })
   })
-  // 没有任何关系的孤岛 → 外圈星尘带
-  const dust = nodes.filter(n => !(n.id in pos))
-  dust.forEach((m, j) => {
+  nodes.filter(n => !(n.id in pos)).forEach((m, j) => {
     const a = j * GA
     const r = 430 + (j % 7) * 26
     pos[m.id] = { x: Math.cos(a) * r, y: Math.sin(a) * r * 0.8 }
@@ -99,42 +126,72 @@ function galaxyPositions(nodes, edges) {
   return pos
 }
 
+// ---------- sigma 渲染 ----------
+let renderer = null
+let graph = null
+let hoveredNode = null
+let hoveredNeighbors = new Set()
+let hoveredEdge = null
+let focusNode = ''
+
+function fitCamera(duration = 250) {
+  if (!renderer || !graph || !graph.order) return
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+  graph.forEachNode((n, attr) => {
+    minX = Math.min(minX, attr.x); maxX = Math.max(maxX, attr.x)
+    minY = Math.min(minY, attr.y); maxY = Math.max(maxY, attr.y)
+  })
+  const el = renderer.getContainer()
+  const w = el.clientWidth || 1200, h = el.clientHeight || 700
+  const ratio = Math.max((maxX - minX + 120) / w, (maxY - minY + 120) / h)
+  renderer.getCamera().animate(
+    { x: 0, y: 0, ratio: Math.max(0.05, ratio), angle: 0 },
+    { duration },
+  )
+}
+
 function renderGraph(data) {
   graphData.value = data
-  if (!cy) return
+  if (!renderer) return
   const visible = data.nodes.filter(n => showDust.value || n.degree > 0 || n.is_library_paper)
   const keep = new Set(visible.map(n => n.id))
   const shownEdges = data.edges.filter(e => keep.has(e.source) && keep.has(e.target))
   nodeCount.value = visible.length
   edgeCount.value = shownEdges.length
   const pos = galaxyPositions(visible, shownEdges)
-  const els = [
-    ...visible.map(n => {
-      const st = TYPE_STYLE[n.type] || { color: '#9aa7b8' }
-      const isPaper = n.type === 'Paper'
-      const size = isPaper ? 46 : Math.min(50, 20 + Math.sqrt(n.degree) * 9)
-      return {
-        data: {
-          id: n.id, l: n.label_zh || n.label, ntype: n.type, degree: n.degree,
-          lib: !!n.is_library_paper, c: st.color, size,
-          glow: isPaper ? 20 : 6 + Math.min(10, n.degree),
-        },
-        position: pos[n.id] || { x: 0, y: 0 },
-      }
-    }),
-    ...shownEdges.map(e => ({
-      data: {
-        id: 'e_' + e.id, source: e.source, target: e.target,
-        rl: REL_ZH[e.relation_type] || e.relation_type,
-        etype: e.evidence_type, conf: e.confidence, rid: e.id,
-      },
-    })),
-  ]
-  cy.elements().remove()
-  cy.add(els)
-  // 直接使用星系极坐标预设（论文=恒星内环，成员黄金角旋臂环绕，孤岛星尘外圈）。
-  // 不再跑 cose 二次松弛——实测它会无视初始位置把整张图压成一团。
-  cy.fit(undefined, 80)
+
+  hoveredNode = null
+  hoveredNeighbors = new Set()
+  graph.clear()
+  visible.forEach(n => {
+    const st = TYPE_STYLE[n.type] || { color: '#9aa7b8' }
+    const isPaper = n.type === 'Paper'
+    const size = isPaper ? 30 : Math.min(18, 7 + Math.sqrt(n.degree) * 2.2)
+    graph.addNode(n.id, {
+      x: pos[n.id]?.x ?? 0, y: pos[n.id]?.y ?? 0,
+      size,
+      color: isPaper ? '#9cc8ff' : st.color,
+      _color: st.color,
+      label: n.label_zh || n.label,
+      type: 'glow',
+      _paper: isPaper,
+    })
+  })
+  shownEdges.forEach(e => {
+    graph.addEdgeWithKey(e.id, e.source, e.target, {
+      size: 1,
+      color: e.evidence_type === 'explicit' ? '#3d5a94' : '#a8684d',
+      _label: (REL_ZH[e.relation_type] || e.relation_type) +
+              `（${e.evidence_type === 'explicit' ? '原文' : '推断'} ${Math.round(e.confidence * 100)}%）`,
+      _rid: e.id,
+    })
+  })
+  fitCamera(focusNode ? 0 : 250)
+  if (focusNode && graph.hasNode(focusNode)) {
+    const a = graph.getNodeAttributes(focusNode)
+    renderer.getCamera().animate({ x: a.x, y: a.y, ratio: 0.28 }, { duration: 350 })
+    focusNode = ''
+  }
 }
 
 async function loadGraph() {
@@ -195,29 +252,8 @@ function switchView(v) {
   else loadGraph()
 }
 
-// ---------- 悬停聚光：点亮邻居，其余星体变暗 ----------
-function spotlight(evt) {
-  const ele = evt.target
-  const neighborhood = ele.closedNeighborhood()
-  cy.elements().addClass('dimmed')
-  neighborhood.removeClass('dimmed')
-  neighborhood.addClass('hl')
-}
-
-function clearSpotlight() {
-  cy.elements().removeClass('dimmed').removeClass('hl')
-}
-
 // ---------- 详情面板 ----------
 const zhName = d => d.name_zh || d.name
-
-async function onNodeTap(evt) {
-  try {
-    panel.value = { kind: 'entity', d: await api.kgEntity(evt.target.data('id')) }
-  } catch (e) {
-    toast('实体详情加载失败：' + e.message, 'err')
-  }
-}
 
 async function openRelation(rid) {
   try {
@@ -225,8 +261,12 @@ async function openRelation(rid) {
   } catch { /* ignore */ }
 }
 
-async function onEdgeTap(evt) {
-  openRelation(evt.target.data('rid'))
+async function onNodeTap(id) {
+  try {
+    panel.value = { kind: 'entity', d: await api.kgEntity(id) }
+  } catch (e) {
+    toast('实体详情加载失败：' + e.message, 'err')
+  }
 }
 
 // ---------- 抽取任务 ----------
@@ -284,72 +324,117 @@ function readerUrl(pid, blockId) {
   return blockId ? `/reader/${pid}?block=${blockId}` : `/reader/${pid}`
 }
 
+function onSearch() {
+  focusNode = ''
+  selPaper.value = ''
+  loadGraph()
+}
+
 onMounted(async () => {
-  cy = cytoscape({
-    container: document.getElementById('kg-canvas'),
-    style: [
-      {
-        selector: 'node',
-        style: {
-          label: 'data(l)', 'font-size': 11.5, color: '#e9efff',
-          'font-family': '"PingFang SC","Microsoft YaHei",system-ui,sans-serif',
-          'background-color': 'data(c)', width: 'data(size)', height: 'data(size)',
-          'border-width': 0,
-          'underlay-color': 'data(c)', 'underlay-opacity': 0.28,
-          'underlay-padding': 'data(glow)',
-          'text-valign': 'bottom', 'text-margin-y': 5,
-          'text-wrap': 'ellipsis', 'text-max-width': 110,
-          'text-outline-color': '#060b18', 'text-outline-width': 2,
-          'min-zoomed-font-size': 7,
-          'transition-property': 'opacity', 'transition-duration': 200,
-        },
-      },
-      {
-        selector: 'node[lib]',
-        style: { 'border-width': 2, 'border-color': '#dff0ff', 'font-size': 13 },
-      },
-      {
-        selector: 'edge',
-        style: {
-          width: 1.5, 'line-color': '#5b7bb8', 'line-opacity': 0.38,
-          'curve-style': 'bezier',
-          label: 'data(rl)', 'font-size': 10, color: '#a8bdee',
-          'font-family': '"PingFang SC","Microsoft YaHei",system-ui,sans-serif',
-          'text-background-color': '#0a1226', 'text-background-opacity': 0.9,
-          'text-background-padding': 2,
-          'min-zoomed-font-size': 12,
-          'transition-property': 'line-opacity width', 'transition-duration': 200,
-        },
-      },
-      { selector: 'edge[etype="inferred"]', style: { 'line-style': 'dashed', 'line-color': '#d29a7a' } },
-      { selector: 'edge[etype="similarity"]', style: { 'line-style': 'dotted', 'line-color': '#8b93a0' } },
-      { selector: '.dimmed', style: { opacity: 0.1 } },
-      {
-        selector: 'node.hl',
-        style: { 'underlay-opacity': 0.5, 'border-width': 1.5, 'border-color': '#ffffffcc' },
-      },
-      {
-        selector: 'edge.hl',
-        style: { 'line-opacity': 0.95, 'line-color': '#8fb4ff', width: 2.4, 'min-zoomed-font-size': 0 },
-      },
-    ],
-    wheelSensitivity: 0.25,
+  try {
+  graph = new Graph()
+  renderer = new Sigma(graph, document.getElementById('kg-canvas'), {
+    nodeProgramClasses: { glow: GlowNodeProgram },
+    enableEdgeEvents: true,
+    minCameraRatio: 0.06,
+    maxCameraRatio: 10,
+    labelRenderedSizeThreshold: 15,
+    nodeLabelSize: 13,
+    nodeLabelColor: '#e9efff',
+    labelWeight: '600',
+    edgeLabelSize: 11,
+    edgeLabelColor: '#c9d6f5',
+    renderEdgeLabels: true,
+    defaultDrawNodeLabel(context, data, settings) {
+      if (!data.label) return
+      const s = settings.nodeLabelSize || 13
+      const col = data._color || '#dfe7ff'
+      context.font = `${settings.labelWeight || '600'} ${s}px "PingFang SC","Microsoft YaHei",system-ui,sans-serif`
+      context.strokeStyle = 'rgba(4,8,20,.9)'
+      context.lineWidth = 3.5
+      context.strokeText(data.label, data.x + data.size + 4, data.y + s / 3)
+      context.fillStyle = col
+      context.fillText(data.label, data.x + data.size + 4, data.y + s / 3)
+    },
+    defaultDrawNodeHover(context, data, settings) {
+      if (!data.label) return
+      const s = settings.nodeLabelSize || 13
+      const col = data._color || '#dfe7ff'
+      context.font = `700 ${s}px "PingFang SC","Microsoft YaHei",system-ui,sans-serif`
+      const w = context.measureText(data.label).width
+      const x = data.x + data.size + 6, y = data.y - s
+      context.fillStyle = 'rgba(8, 14, 32, .88)'
+      context.beginPath()
+      context.roundRect(x - 6, y - 4, w + 12, s + 10, 6)
+      context.fill()
+      context.strokeStyle = col + '88'
+      context.lineWidth = 1
+      context.stroke()
+      context.fillStyle = '#f2f6ff'
+      context.fillText(data.label, x, y + s - 2)
+    },
+    nodeReducer(node, data) {
+      const res = { ...data }
+      if (hoveredNode) {
+        if (node !== hoveredNode && !hoveredNeighbors.has(node)) {
+          // 变暗：8 位 hex 直接带 alpha，星光着色器按 alpha 衰减
+          res.color = data._color + (data._paper ? '2e' : '2e')
+          res.label = res._paper ? res.label : null
+        }
+      }
+      return res
+    },
+    edgeReducer(edge, data) {
+      const res = { ...data, label: null }  // 默认不显示线标签，点亮/悬停时才出现
+      if (hoveredNode) {
+        const [s, t] = graph.extremities(edge)
+        if (s !== hoveredNode && t !== hoveredNode) {
+          res.hidden = true
+        } else {
+          res.size = 2
+          res.color = '#8fb4ff'
+          res.label = data._label
+        }
+      } else if (hoveredEdge === edge) {
+        res.size = 2
+        res.color = '#8fb4ff'
+        res.label = data._label
+      }
+      return res
+    },
   })
-  cy.on('mouseover', 'node', spotlight)
-  cy.on('mouseout', 'node', clearSpotlight)
-  cy.on('mouseover', 'edge', spotlight)
-  cy.on('mouseout', 'edge', clearSpotlight)
-  cy.on('tap', 'node', onNodeTap)
-  cy.on('tap', 'edge', onEdgeTap)
-  await Promise.all([loadOverview(), loadGraph(), openTopics()])
-  const jobs = await api.kgJobs().catch(() => [])
-  if (jobs.some(j => j.status === 'running' || j.status === 'pending')) watchJobs()
-  papers.value = await api.papers().catch(() => [])
+  renderer.on('clickNode', ({ node }) => onNodeTap(node))
+  renderer.on('clickEdge', ({ edge }) => openRelation(graph.getEdgeAttribute(edge, '_rid')))
+  renderer.on('enterNode', ({ node }) => {
+    hoveredNode = node
+    hoveredNeighbors = new Set(graph.neighbors(node))
+    hoveredEdge = null
+    renderer.refresh({ skipIndexation: true })
+  })
+  renderer.on('leaveNode', () => {
+    hoveredNode = null
+    hoveredNeighbors = new Set()
+    renderer.refresh({ skipIndexation: true })
+  })
+  renderer.on('enterEdge', ({ edge }) => {
+    if (!hoveredNode) { hoveredEdge = edge; renderer.refresh({ skipIndexation: true }) }
+  })
+  renderer.on('leaveEdge', () => {
+    if (hoveredEdge) { hoveredEdge = null; renderer.refresh({ skipIndexation: true }) }
+  })
+    await Promise.all([loadOverview(), loadGraph(), openTopics()])
+    const jobs = await api.kgJobs().catch(() => [])
+    if (jobs.some(j => j.status === 'running' || j.status === 'pending')) watchJobs()
+    papers.value = await api.papers().catch(() => [])
+  } catch (e) {
+    window.__kgInitError = String(e?.stack || e)
+    toast('星图初始化失败：' + (e?.message || e), 'err')
+  }
 })
 
 onBeforeUnmount(() => {
   if (jobsTimer.value) clearInterval(jobsTimer.value)
-  if (cy) { cy.destroy(); cy = null }
+  if (renderer) { renderer.kill(); renderer = null }
 })
 </script>
 
@@ -362,7 +447,7 @@ onBeforeUnmount(() => {
           {{ overview.entities_total }} 个知识点 · {{ overview.relations_total }} 条关系 ·
           已纳入 {{ overview.papers_extracted }}/{{ overview.papers_total }} 篇论文 ·
           每条线都有原文依据<template v-if="overview.inferred_relations">
-           （{{ overview.inferred_relations }} 条为 AI 推断，橙色虚线）</template>
+           （{{ overview.inferred_relations }} 条为 AI 推断，橙线）</template>
         </p>
       </div>
       <div class="kg-actions">
@@ -388,7 +473,7 @@ onBeforeUnmount(() => {
         </option>
       </select>
       <input class="input" v-model="q" style="max-width:220px"
-             placeholder="搜索知识点，回车定位" @keyup.enter="selPaper = ''; loadGraph()" />
+             placeholder="搜索知识点，回车定位" @keyup.enter="onSearch" />
       <button class="btn sm" :disabled="loading" @click="loadGraph">刷新</button>
       <button v-if="selPaper" class="btn sm primary" @click="extractOne">重抽此论文</button>
       <label class="dust-toggle" @click.prevent="toggleDust">
@@ -419,6 +504,7 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="kg-canvas-wrap">
+        <div class="nebula"></div>
         <div id="kg-canvas"></div>
         <div v-if="loading" class="kg-loading">星图绘制中…</div>
         <div v-if="graphData && !graphData.nodes.length && !loading" class="kg-empty">
@@ -429,10 +515,10 @@ onBeforeUnmount(() => {
           <span v-for="(st, t) in TYPE_STYLE" :key="t" class="lg-item" :title="t">
             <i :style="{ background: st.color }"></i>{{ st.zh }}
           </span>
-          <span class="lg-item"><i class="lg-line"></i>实线 = 论文原话</span>
-          <span class="lg-item"><i class="lg-line dash"></i>橙色虚线 = AI 推断</span>
+          <span class="lg-item"><i class="lg-line"></i>蓝线 = 论文原话</span>
+          <span class="lg-item"><i class="lg-line inf"></i>橙线 = AI 推断</span>
         </div>
-        <div class="kg-tip">鼠标悬停任意星体 → 只点亮与它直接相关的连线；滚轮缩放后可看到线上的中文关系名</div>
+        <div class="kg-tip">悬停星体只点亮它的连线 · 滚轮缩放 · 拖动平移</div>
       </div>
 
       <aside class="kg-panel">
@@ -531,11 +617,11 @@ onBeforeUnmount(() => {
         <div v-else class="kg-panel-hint">
           <p><b>这张图怎么读</b></p>
           <ul>
-            <li>每颗 <b style="color:#6aa9ff">蓝色大星</b> 是一篇论文，环绕它的是论文里的方法、数据集、研究问题</li>
-            <li><b>悬停</b>任意星体：只点亮与它直接相关的连线，一眼看清"谁和它有关"</li>
+            <li>每颗 <b style="color:#7db4ff">带白色光核的大星</b> 是一篇论文，环绕它的是论文里的方法、数据集、研究问题</li>
+            <li><b>悬停</b>任意星体：只点亮与它直接相关的连线，线上标出中文关系名和置信度</li>
             <li><b>点击</b>星体或连线 → 右栏看详情和<b>论文原句证据</b>，可一键跳回原文位置</li>
-            <li>放大后能看到每条线上的<b>中文关系名</b>（提出 / 缓解 / 使用…）</li>
-            <li>虚线 = AI 推断（论文没直说），实线 = 论文原话，绝不混淆</li>
+            <li><b>橙线</b> = AI 推断（论文没直说），<b>蓝线</b> = 论文原话，绝不混淆</li>
+            <li>滚轮缩放、拖动平移，用左侧搜索可以飞到某个知识点</li>
           </ul>
           <p class="muted" style="font-size:12px;margin-top:10px">
             图谱完全由论文原文抽取，没有证据的内容不会出现在这里。</p>
@@ -580,10 +666,14 @@ onBeforeUnmount(() => {
 /* ---- 深空画布 ---- */
 .kg-canvas-wrap { position: relative; flex: 1; min-width: 0; height: calc(100vh - 265px);
   min-height: 460px; border-radius: 14px; overflow: hidden;
-  background: radial-gradient(ellipse at 50% 42%, #13224a 0%, #0b1430 46%, #050a1a 100%);
-  border: 1px solid #1d2c52; box-shadow: inset 0 0 120px rgba(20, 40, 90, .45); }
+  background: radial-gradient(ellipse at 50% 40%, #0e1c40 0%, #091026 48%, #040713 100%);
+  border: 1px solid #1d2c52; box-shadow: inset 0 0 160px rgba(16, 36, 88, .5); }
 #kg-canvas { position: absolute; inset: 0; z-index: 1; }
-/* 三层静态星野 */
+/* 星云 + 星野（两层伪元素 + 一层实体 div） */
+.nebula { position: absolute; inset: 0; z-index: 0; pointer-events: none; background:
+  radial-gradient(420px 300px at 24% 30%, rgba(60, 110, 220, .14), transparent 70%),
+  radial-gradient(380px 280px at 74% 42%, rgba(150, 90, 220, .11), transparent 70%),
+  radial-gradient(400px 300px at 52% 78%, rgba(40, 170, 170, .10), transparent 70%); }
 .kg-canvas-wrap::before, .kg-canvas-wrap::after { content: ''; position: absolute; inset: 0;
   pointer-events: none; z-index: 0; }
 .kg-canvas-wrap::before { background-image:
@@ -614,8 +704,8 @@ onBeforeUnmount(() => {
 .lg-item { display: inline-flex; align-items: center; gap: 5px; }
 .lg-item i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
 .lg-line { width: 16px !important; height: 0 !important; border-radius: 0 !important;
-  border-top: 2px solid #5b7bb8; }
-.lg-line.dash { border-top-style: dashed; border-top-color: #d29a7a; }
+  border-top: 1.5px solid #3d5a94; }
+.lg-line.inf { border-top-color: #a8684d; }
 .kg-tip { position: absolute; top: 12px; right: 16px; z-index: 2; font-size: 12px;
   color: #8fa5d8; background: rgba(10, 18, 38, .55); border: 1px solid #1d2c52;
   padding: 4px 10px; border-radius: 12px; }
