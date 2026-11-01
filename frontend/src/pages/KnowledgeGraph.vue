@@ -571,8 +571,9 @@ onBeforeUnmount(() => {
         <p class="page-sub" v-if="overview">
           {{ overview.entities_total }} 个知识点 · {{ overview.relations_total }} 条关系 ·
           已纳入 {{ overview.papers_extracted }}/{{ overview.papers_total }} 篇论文 ·
-          每条关系均可追溯到论文证据<template v-if="overview.inferred_relations || overview.similarity_relations">
-           （AI 推断 {{ overview.inferred_relations || 0 }} 条 · 语义相似 {{ overview.similarity_relations || 0 }} 条）</template>
+          每条关系附来源证据 · 待核验 {{ overview.relation_review?.unreviewed || 0 }} 条 · 人工确认 {{ overview.relation_review?.verified || 0 }} 条
+          <template v-if="overview.inferred_relations || overview.similarity_relations">
+           · 旧数据推断 {{ overview.inferred_relations || 0 }} 条 · 语义相似 {{ overview.similarity_relations || 0 }} 条</template>
         </p>
       </div>
       <div class="kg-actions">
