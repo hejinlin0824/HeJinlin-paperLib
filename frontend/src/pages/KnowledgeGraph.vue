@@ -627,6 +627,9 @@ onBeforeUnmount(() => {
 
         <!-- 同一对实体之间的多种关系：保留每条原始关系和证据入口 -->
         <template v-else-if="panel.kind === 'relationGroup'">
+          <div v-if="panel.failedCount" class="kg-partial-warning">
+            有 {{ panel.failedCount }} 条关系详情读取失败；其余已成功加载的关系仍可查看。
+          </div>
           <div class="p-head">
             <span class="badge">多重关系</span>
             <h3>这两个知识点之间有 {{ panel.relations.length }} 种关系</h3>
@@ -711,7 +714,7 @@ onBeforeUnmount(() => {
 .lg-item{display:inline-flex;align-items:center;gap:5px}.lg-item i{width:10px;height:10px;border-radius:50%;display:inline-block}
 .lg-line{width:16px!important;height:0!important;border-radius:0!important;border-top:1.5px solid #6887a8}
 .lg-line.inf{border-top-color:#c47a43}.lg-line.sim{border-top-color:#8064a9}
-.kg-tip{position:absolute;top:12px;left:16px;z-index:2;font-size:12px;color:#526174;background:rgba(255,255,255,.94);border:1px solid #dbe3ec;padding:4px 10px;border-radius:12px;pointer-events:none}
+.kg-tip{position:absolute;top:48px;left:16px;z-index:2;font-size:12px;color:#526174;background:rgba(255,255,255,.94);border:1px solid #dbe3ec;padding:4px 10px;border-radius:12px;pointer-events:none}
 .kg-panel{width:360px;flex-shrink:0;overflow:auto;background:#fff;color:#253449;border:1px solid #dbe3ec;border-radius:12px;padding:16px;box-shadow:0 8px 24px rgba(35,55,80,.06)}
 .kg-panel-hint{font-size:13px;line-height:1.9;color:#526174}.kg-panel-hint ul{margin:6px 0;padding-left:18px}
 .kg-panel .muted{color:#718096!important}.p-head h3{margin:8px 0 6px;font-size:16px;color:#1e293b}
@@ -748,6 +751,7 @@ onBeforeUnmount(() => {
 .kg-scope-select{width:190px;flex:none}.kg-review-flag{color:#a15b19!important}
 .relation-group-item{border:1px solid #e5ebf2;border-radius:8px;margin:8px 0;padding:12px}
 .relation-group-item small{display:block;color:#718096;margin-top:4px}
+.kg-partial-warning{padding:8px 10px;border:1px solid #f0d6a8;background:#fff8e8;color:#8a5a16;border-radius:7px;font-size:12px}
 @media(max-width:1100px){.kg-body{flex-wrap:wrap}.kg-canvas-wrap{flex-basis:100%;order:1}.kg-topiclist{width:100%;max-height:180px;order:0}.kg-panel{width:100%;max-height:420px;order:2}}
 @media(max-width:900px){.kg-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.kg-overview-grid{grid-template-columns:1fr}}
 @media(max-width:600px){.kg-head{flex-direction:column}.kg-actions{width:100%;flex-wrap:wrap}.kg-paper-row{align-items:flex-start;flex-direction:column}.kg-scope-select{width:100%}.kg-canvas-wrap{min-height:380px;height:55vh}.kg-legend{bottom:8px;left:8px;right:8px;gap:6px;font-size:10px}.kg-tip{display:none}.kg-canvas-controls{top:8px;right:8px}}
