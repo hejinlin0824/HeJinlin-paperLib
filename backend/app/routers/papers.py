@@ -140,7 +140,7 @@ async def upload(background: BackgroundTasks, file: UploadFile = File(...)):
 
 
 LIST_SQL = """
-SELECT p.id, p.title, p.title_zh, p.authors, p.year, p.venue, p.tags, p.rating,
+SELECT p.id, p.title, p.title_zh, p.authors, p.year, p.venue, p.tags, p.rating, p.library_role,
        p.status, p.parse_engine, p.translate_engine, p.translate_done, p.translate_total,
        p.guide, p.explain_done, p.explain_total, p.cleaning_report,
        p.error, p.reading_progress, p.created_at, p.updated_at,

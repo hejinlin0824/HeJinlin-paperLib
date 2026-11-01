@@ -80,6 +80,7 @@ export const api = {
   kgRelation: (id) => request(`/api/knowledge-graph/relations/${id}`),
   kgPaperStructure: (pid) => request(`/api/knowledge-graph/papers/${pid}`),
   kgTopics: () => request('/api/knowledge-graph/topics'),
+  kgSetPaperScope: (pid, library_role) => request(`/api/knowledge-graph/papers/${pid}/scope`, { method: 'PATCH', body: { library_role } }),
   kgJobs: () => request('/api/knowledge-graph/jobs'),
   kgExtractPaper: (pid) => request(`/api/knowledge-graph/papers/${pid}/extract`, { method: 'POST' }),
   kgRebuild: () => request('/api/knowledge-graph/rebuild', { method: 'POST' }),

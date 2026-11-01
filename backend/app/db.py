@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS papers(
   venue TEXT DEFAULT '',
   doi TEXT DEFAULT '',
   status TEXT DEFAULT 'pending_parse',
+  library_role TEXT NOT NULL DEFAULT 'normal',
   tags TEXT DEFAULT '',
   rating INTEGER DEFAULT 0,
   reading_progress TEXT DEFAULT '',
@@ -225,6 +226,7 @@ def init_db():
         c.executescript(SCHEMA)
         c.execute("PRAGMA journal_mode=WAL")
         _migrate(c)
+        _create_kg_views(c)
         for k, v in DEFAULT_SETTINGS.items():
             c.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", (k, v))
 
@@ -234,6 +236,8 @@ def _migrate(c):
     cols = {r[1] for r in c.execute("PRAGMA table_info(papers)")}
     if "title_locked" not in cols:
         c.execute("ALTER TABLE papers ADD COLUMN title_locked INTEGER DEFAULT 0")
+    if "library_role" not in cols:
+        c.execute("ALTER TABLE papers ADD COLUMN library_role TEXT NOT NULL DEFAULT 'normal'")
     for col, ddl in (("guide", "TEXT DEFAULT ''"),
                      ("explain_done", "INTEGER DEFAULT 0"),
                      ("explain_total", "INTEGER DEFAULT 0"),
@@ -247,6 +251,43 @@ def _migrate(c):
     kg_cols = {r[1] for r in c.execute("PRAGMA table_info(kg_entities)")}
     if "name_zh" not in kg_cols:
         c.execute("ALTER TABLE kg_entities ADD COLUMN name_zh TEXT DEFAULT ''")
+
+
+def _create_kg_views(c):
+    """Read-only graph views: test/excluded papers never leak into user-facing KG APIs."""
+    c.executescript("""
+    DROP VIEW IF EXISTS kg_visible_entities;
+    DROP VIEW IF EXISTS kg_visible_relations;
+    DROP VIEW IF EXISTS kg_visible_evidence;
+    DROP VIEW IF EXISTS kg_visible_jobs;
+    CREATE VIEW kg_visible_evidence AS
+      SELECT ev.* FROM kg_evidence ev
+      JOIN papers p ON p.id=ev.paper_id
+      WHERE COALESCE(p.library_role, 'normal')='normal';
+    CREATE VIEW kg_visible_relations AS
+      SELECT r.id, r.source_entity_id, r.target_entity_id, r.relation_type,
+             CASE
+               WHEN EXISTS (SELECT 1 FROM kg_visible_evidence ev
+                            WHERE ev.relation_id=r.id AND ev.evidence_type='explicit') THEN 'explicit'
+               WHEN EXISTS (SELECT 1 FROM kg_visible_evidence ev
+                            WHERE ev.relation_id=r.id AND ev.evidence_type='inferred') THEN 'inferred'
+               ELSE 'similarity'
+             END AS evidence_type,
+             COALESCE((SELECT MAX(ev.confidence) FROM kg_visible_evidence ev
+                       WHERE ev.relation_id=r.id), 0.5) AS confidence,
+             r.status, r.created_by_paper, r.created_at
+      FROM kg_relations r
+      WHERE EXISTS (SELECT 1 FROM kg_visible_evidence ev WHERE ev.relation_id=r.id);
+    CREATE VIEW kg_visible_entities AS
+      SELECT e.* FROM kg_entities e
+      WHERE EXISTS (SELECT 1 FROM kg_visible_evidence ev WHERE ev.entity_id=e.id)
+         OR EXISTS (SELECT 1 FROM kg_visible_relations r
+                    WHERE r.source_entity_id=e.id OR r.target_entity_id=e.id);
+    CREATE VIEW kg_visible_jobs AS
+      SELECT j.* FROM kg_extraction_jobs j
+      JOIN papers p ON p.id=j.paper_id
+      WHERE COALESCE(p.library_role, 'normal')='normal';
+    """)
 
 
 # ---------- settings 便捷方法 ----------
