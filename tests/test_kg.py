@@ -565,3 +565,18 @@ def test_relation_review_state_migrates_as_unreviewed(kg_db):
         r["name"] for r in app_db.rows("PRAGMA table_info(kg_relations)")
     }
     assert "review_status" in relation_cols
+
+
+def test_overview_reports_manual_review_coverage(kg_db):
+    seed_paper("review-counts")
+    _store_good("review-counts")
+    relation_ids = app_db.rows("SELECT id FROM kg_relations ORDER BY id")
+    app_db.ex("UPDATE kg_relations SET review_status='verified' WHERE id=?",
+              (relation_ids[0]["id"],))
+    app_db.ex("UPDATE kg_relations SET review_status='rejected' WHERE id=?",
+              (relation_ids[1]["id"],))
+
+    review = kg_queries.overview()["relation_review"]
+    assert review["verified"] == 1
+    assert review["rejected"] == 1
+    assert review["unreviewed"] == 1
