@@ -6,38 +6,12 @@
 // 4) 背景深空+星云+星野，给星点留呼吸感。
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import * as SigmaPkg from 'sigma'
-import { NodePointProgram } from 'sigma/rendering'
 import Graph from 'graphology'
 import api from '../api'
+import { groupRelationsByEndpoints } from '../utils/graphEdges'
 import { toast } from '../stores'
 
 const Sigma = SigmaPkg.default ?? SigmaPkg.Sigma
-
-// ---------- 自定义"星光"着色器：中心白热 → 类型色 → 透明衰减（参考真实星图的
-// additive glow 做法；替代实心圆/贴图方案，纯 WebGL 程序无贴图加载） ----------
-const GLOW_FRAGMENT = `
-precision mediump float;
-varying vec4 v_color;
-varying float v_border;
-void main(void) {
-  #ifdef PICKING_MODE
-  gl_FragColor = v_color;
-  #else
-  float dist = length(gl_PointCoord - vec2(0.5, 0.5)) * 2.0;
-  float falloff = pow(max(0.0, 1.0 - dist), 1.8);
-  vec3 core = mix(v_color.rgb, vec3(1.0), pow(max(0.0, 1.0 - dist), 3.0) * 0.85);
-  // sigma 用预乘 alpha 混合（blendFunc(ONE, ONE_MINUS_SRC_ALPHA)），RGB 必须乘 alpha
-  gl_FragColor = vec4(core * falloff, v_color.a * falloff);
-  #endif
-}
-`
-
-class GlowNodeProgram extends NodePointProgram {
-  getDefinition() {
-    const def = super.getDefinition()
-    return { ...def, FRAGMENT_SHADER_SOURCE: GLOW_FRAGMENT }
-  }
-}
 
 const overview = ref(null)
 const papers = ref([])
@@ -67,19 +41,19 @@ const REL_ZH = {
 const REL_OPTIONS = Object.keys(REL_ZH)
 
 const TYPE_STYLE = {
-  Paper: { color: '#7db4ff', zh: '论文' },
-  Algorithm: { color: '#5fd99a', zh: '算法' },
-  ResearchProblem: { color: '#ff8177', zh: '研究问题' },
-  Dataset: { color: '#ffb35c', zh: '数据集' },
-  Model: { color: '#b39aff', zh: '模型' },
-  Metric: { color: '#ffd166', zh: '指标' },
-  Concept: { color: '#63d8d3', zh: '概念' },
-  Finding: { color: '#f478b8', zh: '发现' },
-  ResearchArea: { color: '#3fdca4', zh: '领域' },
-  Author: { color: '#9aa7b8', zh: '作者人名' },
-  Venue: { color: '#d2a86e', zh: '期刊会议' },
-  Task: { color: '#82abff', zh: '任务' },
-  Institution: { color: '#8b93a0', zh: '机构' },
+  Paper: { color: '#365f8d', zh: '论文' },
+  Algorithm: { color: '#3f806b', zh: '算法' },
+  ResearchProblem: { color: '#b65d56', zh: '研究问题' },
+  Dataset: { color: '#a87535', zh: '数据集' },
+  Model: { color: '#7761a8', zh: '模型' },
+  Metric: { color: '#9b8139', zh: '指标' },
+  Concept: { color: '#3d8384', zh: '概念' },
+  Finding: { color: '#a45d83', zh: '发现' },
+  ResearchArea: { color: '#4f8568', zh: '领域' },
+  Author: { color: '#718096', zh: '作者人名' },
+  Venue: { color: '#9a7b55', zh: '期刊会议' },
+  Task: { color: '#587ca5', zh: '任务' },
+  Institution: { color: '#718096', zh: '机构' },
 }
 const EVI_LABEL = { explicit: '原文', inferred: '推断', similarity: '相似' }
 
@@ -89,56 +63,47 @@ const presentTypes = computed(() => {
     .map(([t, n]) => ({ t, n, ...(TYPE_STYLE[t] || { color: '#9aa7b8', zh: t }) }))
 })
 
-// ---------- 关系拓扑布局 ----------
-// 位置只由真实边结构决定，不把共享实体强行归属给“最先遍历到”的论文。
-// 因此一个方法被多篇论文使用时，会自然处在多个关系簇之间；坐标不代表语义相似度。
-function forcePositions(nodes, edges) {
-  const count = nodes.length
-  if (!count) return {}
-  const index = new Map(nodes.map((n, i) => [n.id, i]))
-  const positions = nodes.map((_, i) => {
-    const angle = i * 2.399963
-    const radius = 55 * Math.sqrt(i + 1)
-    return { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius }
-  })
-  const links = edges.map(e => [index.get(e.source), index.get(e.target)])
-    .filter(([a, b]) => a !== undefined && b !== undefined && a !== b)
-  const area = Math.max(90000, count * 18000)
-  const k = Math.sqrt(area / count)
-  const iterations = count > 260 ? 36 : 52
+// ---------- 语义分列布局 ----------
+// 节点按实体类别分列，列内按连接度与名称稳定排序。列只表达“类别”，
+// 不暗示节点间的语义距离；真实关系仍只由数据库中的边决定。
+const TYPE_LANE = {
+  Paper: 0,
+  ResearchProblem: 1,
+  Algorithm: 2,
+  Model: 3,
+  Concept: 4,
+  Task: 4,
+  Dataset: 5,
+  Metric: 5,
+  Finding: 6,
+  ResearchArea: 6,
+  Author: 7,
+  Venue: 7,
+  Institution: 7,
+}
+const LANE_GAP = 250
+const ROW_GAP = 92
 
-  for (let step = 0; step < iterations; step++) {
-    const disp = positions.map(() => ({ x: 0, y: 0 }))
-    for (let i = 0; i < count; i++) {
-      for (let j = i + 1; j < count; j++) {
-        let dx = positions[i].x - positions[j].x
-        let dy = positions[i].y - positions[j].y
-        let dist = Math.hypot(dx, dy) || 0.01
-        if (dist < 0.01) { dx = 0.01 * (i + 1); dy = 0.01 * (j + 1); dist = Math.hypot(dx, dy) }
-        const force = (k * k) / dist
-        const fx = (dx / dist) * force, fy = (dy / dist) * force
-        disp[i].x += fx; disp[i].y += fy
-        disp[j].x -= fx; disp[j].y -= fy
-      }
-    }
-    for (const [a, b] of links) {
-      const dx = positions[a].x - positions[b].x
-      const dy = positions[a].y - positions[b].y
-      const dist = Math.hypot(dx, dy) || 0.01
-      const force = (dist * dist) / k
-      const fx = (dx / dist) * force, fy = (dy / dist) * force
-      disp[a].x -= fx; disp[a].y -= fy
-      disp[b].x += fx; disp[b].y += fy
-    }
-    const temperature = 24 * (1 - step / iterations)
-    for (let i = 0; i < count; i++) {
-      const mag = Math.hypot(disp[i].x, disp[i].y) || 0.01
-      const scale = Math.min(mag, temperature) / mag
-      positions[i].x += disp[i].x * scale
-      positions[i].y += disp[i].y * scale
-    }
+function forcePositions(nodes) {
+  const lanes = new Map()
+  for (const node of nodes) {
+    const lane = TYPE_LANE[node.type] ?? 4
+    if (!lanes.has(lane)) lanes.set(lane, [])
+    lanes.get(lane).push(node)
   }
-  return Object.fromEntries(nodes.map((n, i) => [n.id, positions[i]]))
+  const result = {}
+  for (const [lane, items] of lanes) {
+    items.sort((a, b) => (b.degree || 0) - (a.degree || 0)
+      || String(a.label_zh || a.label).localeCompare(String(b.label_zh || b.label), 'zh-CN'))
+    const center = (items.length - 1) / 2
+    items.forEach((node, index) => {
+      result[node.id] = {
+        x: lane * LANE_GAP,
+        y: (index - center) * ROW_GAP,
+      }
+    })
+  }
+  return result
 }
 
 // ---------- sigma 渲染 ----------
@@ -160,7 +125,7 @@ function fitCamera(duration = 250) {
   const w = el.clientWidth || 1200, h = el.clientHeight || 700
   const ratio = Math.max((maxX - minX + 120) / w, (maxY - minY + 120) / h)
   renderer.getCamera().animate(
-    { x: 0, y: 0, ratio: Math.max(0.05, ratio), angle: 0 },
+    { x: (minX + maxX) / 2, y: (minY + maxY) / 2, ratio: Math.max(0.05, ratio), angle: 0 },
     { duration },
   )
 }
@@ -173,36 +138,43 @@ function renderGraph(data) {
   const shownEdges = data.edges.filter(e => keep.has(e.source) && keep.has(e.target))
   nodeCount.value = visible.length
   edgeCount.value = shownEdges.length
-  const pos = forcePositions(visible, shownEdges)
+  const pos = forcePositions(visible)
 
   hoveredNode = null
   hoveredNeighbors = new Set()
   graph.clear()
   visible.forEach(n => {
-    const st = TYPE_STYLE[n.type] || { color: '#9aa7b8' }
+    const st = TYPE_STYLE[n.type] || { color: '#718096' }
     const isPaper = n.type === 'Paper'
-    const secondary = ['Author', 'Institution', 'Venue'].includes(n.type)
-    const size = isPaper ? 24 : secondary ? 4.5 : Math.min(15, 6 + Math.sqrt(n.degree) * 1.5)
     graph.addNode(n.id, {
       x: pos[n.id]?.x ?? 0, y: pos[n.id]?.y ?? 0,
-      size,
-      color: isPaper ? '#9cc8ff' : st.color,
+      size: isPaper ? 13 : Math.min(10, 6 + Math.sqrt(n.degree || 0)),
+      color: isPaper ? '#294f78' : st.color,
+      label: n.label_zh || n.label,
       _color: st.color,
-      label: secondary ? null : (n.label_zh || n.label),
-      type: 'glow',
       _paper: isPaper,
-      _secondary: secondary,
     })
   })
-  shownEdges.forEach(e => {
-    graph.addEdgeWithKey(e.id, e.source, e.target, {
-      size: 1,
-      color: e.evidence_type === 'explicit' ? '#3d5a94' : e.evidence_type === 'similarity' ? '#7862a8' : '#a8684d',
-      _label: (REL_ZH[e.relation_type] || e.relation_type) +
-              `（${EVI_LABEL[e.evidence_type] || e.evidence_type}）`,
-      _rid: e.id,
+  // 同一对端点可能有多种关系（例如论文既“提出”又“对比”某算法）。
+  // Sigma 的普通 Graph 不允许平行边，因此按有向端点聚合成一条可视连线，
+  // 原始关系 ID 全部保留，点击后在详情面板中逐条选择。
+  const edgeGroups = groupRelationsByEndpoints(shownEdges)
+  for (const group of edgeGroups) {
+    const relations = group.relations
+    const kinds = new Set(relations.map(e => e.evidence_type))
+    const color = kinds.has('inferred') ? '#c47a43'
+      : kinds.has('similarity') ? '#8064a9' : '#6887a8'
+    const labels = [...new Set(relations.map(e =>
+      (REL_ZH[e.relation_type] || e.relation_type) + ' · ' +
+      (EVI_LABEL[e.evidence_type] || e.evidence_type)))]
+    graph.addEdgeWithKey('pair:' + group.key, group.source, group.target, {
+      size: Math.min(3, 1.15 + Math.log2(relations.length)),
+      color,
+      _label: labels.join(' / '),
+      _rids: relations.map(e => e.id),
+      _relationCount: relations.length,
     })
-  })
+  }
   fitCamera(focusNode ? 0 : 250)
   if (focusNode && graph.hasNode(focusNode)) {
     const a = graph.getNodeAttributes(focusNode)
@@ -294,6 +266,15 @@ async function openRelation(rid) {
   } catch { /* ignore */ }
 }
 
+async function openRelationGroup(rids) {
+  try {
+    const relations = await Promise.all(rids.map(rid => api.kgRelation(rid)))
+    panel.value = { kind: 'relationGroup', relations: relations.filter(Boolean) }
+  } catch (e) {
+    toast('关系详情加载失败：' + e.message, 'err')
+  }
+}
+
 async function onNodeTap(id) {
   try {
     panel.value = { kind: 'entity', d: await api.kgEntity(id) }
@@ -371,26 +352,25 @@ function ensureRenderer() {
   graph = new Graph()
   renderer = new Sigma(graph, document.getElementById('kg-canvas'), {
     allowInvalidContainer: true,
-    nodeProgramClasses: { glow: GlowNodeProgram },
     enableEdgeEvents: true,
     minCameraRatio: 0.06,
     maxCameraRatio: 10,
-    labelRenderedSizeThreshold: 15,
-    nodeLabelSize: 13,
-    nodeLabelColor: '#e9efff',
+    labelRenderedSizeThreshold: 7,
+    nodeLabelSize: 12,
+    nodeLabelColor: '#263548',
     labelWeight: '600',
     edgeLabelSize: 11,
-    edgeLabelColor: '#c9d6f5',
+    edgeLabelColor: '#334155',
     renderEdgeLabels: true,
     defaultDrawNodeLabel(context, data, settings) {
       if (!data.label) return
-      const s = settings.nodeLabelSize || 13
+      const s = settings.nodeLabelSize || 12
       const col = data._color || '#dfe7ff'
       context.font = `${settings.labelWeight || '600'} ${s}px "PingFang SC","Microsoft YaHei",system-ui,sans-serif`
-      context.strokeStyle = 'rgba(4,8,20,.9)'
-      context.lineWidth = 3.5
-      context.strokeText(data.label, data.x + data.size + 4, data.y + s / 3)
-      context.fillStyle = col
+      context.strokeStyle = 'rgba(255,255,255,.96)'
+      context.lineWidth = 4
+      context.strokeText(data.label, data.x + data.size + 5, data.y + s / 3)
+      context.fillStyle = '#263548'
       context.fillText(data.label, data.x + data.size + 4, data.y + s / 3)
     },
     defaultDrawNodeHover(context, data, settings) {
@@ -400,48 +380,49 @@ function ensureRenderer() {
       context.font = `700 ${s}px "PingFang SC","Microsoft YaHei",system-ui,sans-serif`
       const w = context.measureText(data.label).width
       const x = data.x + data.size + 6, y = data.y - s
-      context.fillStyle = 'rgba(8, 14, 32, .88)'
+      context.fillStyle = 'rgba(255,255,255,.98)'
       context.beginPath()
       context.roundRect(x - 6, y - 4, w + 12, s + 10, 6)
       context.fill()
       context.strokeStyle = col + '88'
       context.lineWidth = 1
       context.stroke()
-      context.fillStyle = '#f2f6ff'
+      context.fillStyle = '#1f2937'
       context.fillText(data.label, x, y + s - 2)
     },
     nodeReducer(node, data) {
       const res = { ...data }
-      if (hoveredNode) {
-        if (node !== hoveredNode && !hoveredNeighbors.has(node)) {
-          // 变暗：8 位 hex 直接带 alpha，星光着色器按 alpha 衰减
-          res.color = data._color + (data._paper ? '2e' : '2e')
-          res.label = res._paper ? res.label : null
-        }
+      if (hoveredNode && node !== hoveredNode && !hoveredNeighbors.has(node)) {
+        res.color = '#dce3ea'
+        res.label = null
       }
       return res
     },
     edgeReducer(edge, data) {
-      const res = { ...data, label: null }  // 默认不显示线标签，点亮/悬停时才出现
+      const res = { ...data, label: null }  // 默认保持画面简洁，悬停时显示关系语义
       if (hoveredNode) {
         const [s, t] = graph.extremities(edge)
         if (s !== hoveredNode && t !== hoveredNode) {
           res.hidden = true
         } else {
           res.size = 2
-          res.color = '#8fb4ff'
+          res.color = '#315f8b'
           res.label = data._label
         }
       } else if (hoveredEdge === edge) {
         res.size = 2
-        res.color = '#8fb4ff'
+        res.color = '#315f8b'
         res.label = data._label
       }
       return res
     },
   })
   renderer.on('clickNode', ({ node }) => onNodeTap(node))
-  renderer.on('clickEdge', ({ edge }) => openRelation(graph.getEdgeAttribute(edge, '_rid')))
+  renderer.on('clickEdge', ({ edge }) => {
+    const rids = graph.getEdgeAttribute(edge, '_rids') || []
+    if (rids.length === 1) openRelation(rids[0])
+    else if (rids.length > 1) openRelationGroup(rids)
+  })
   renderer.on('enterNode', ({ node }) => {
     hoveredNode = node
     hoveredNeighbors = new Set(graph.neighbors(node))
@@ -593,7 +574,7 @@ onBeforeUnmount(() => {
           <span class="lg-item"><i class="lg-line inf"></i>橙线 = AI 推断</span>
           <span class="lg-item"><i class="lg-line sim"></i>紫线 = 语义相似（不代表技术继承）</span>
         </div>
-        <div class="kg-tip">悬停节点查看直接关系 · 滚轮缩放 · 拖动平移 · 位置只表示连接结构</div>
+        <div class="kg-tip">按知识类别分列 · 悬停查看关系 · 点击查看原文证据 · 滚轮缩放</div>
       </div>
 
       <aside class="kg-panel">
@@ -667,6 +648,24 @@ onBeforeUnmount(() => {
           </div>
         </template>
 
+        <!-- 同一对实体之间的多种关系：保留每条原始关系和证据入口 -->
+        <template v-else-if="panel.kind === 'relationGroup'">
+          <div class="p-head">
+            <span class="badge">多重关系</span>
+            <h3>这两个知识点之间有 {{ panel.relations.length }} 种关系</h3>
+            <p class="p-desc">图中将同一对节点的连线合并显示，以避免重叠；这里仍保留每条关系的独立语义和原文证据。</p>
+          </div>
+          <div class="p-sec">
+            <div v-for="r in panel.relations" :key="r.id" class="rel-item relation-group-item" @click="openRelation(r.id)">
+              <span class="rel-dir">
+                <b class="rel-type" :class="{ inf: r.evidence_type !== 'explicit' }">{{ REL_ZH[r.relation_type] || r.relation_type }}</b>
+                <small>{{ EVI_LABEL[r.evidence_type] || r.evidence_type }} · {{ r.evidence.length }} 条证据</small>
+              </span>
+              <span>查看证据 ›</span>
+            </div>
+          </div>
+        </template>
+
         <!-- 主题详情 -->
         <template v-else-if="panel.kind === 'topic'">
           <div class="p-head"><h3>{{ panel.topic.name_zh || panel.topic.name }}</h3>
@@ -692,11 +691,12 @@ onBeforeUnmount(() => {
         <div v-else class="kg-panel-hint">
           <p><b>这张图怎么读</b></p>
           <ul>
-            <li>每颗 <b style="color:#7db4ff">带白色光核的大星</b> 是一篇论文，环绕它的是论文里的方法、数据集、研究问题</li>
+            <li>节点按类别分列：论文、研究问题、算法、模型与概念、实验资源、研究发现等</li>
             <li><b>悬停</b>任意星体：只点亮与它直接相关的连线，线上标出中文关系名和置信度</li>
             <li><b>点击</b>星体或连线 → 右栏看详情和<b>论文原句证据</b>，可一键跳回原文位置</li>
             <li><b>橙线</b> = AI 推断（论文没直说），<b>蓝线</b> = 论文原话，绝不混淆</li>
-            <li>滚轮缩放、拖动平移，用左侧搜索可以飞到某个知识点</li>
+            <li>同一对节点存在多种关系时，画面合并连线但保留全部关系；点击连线可逐条查看证据</li>
+            <li>滚轮缩放、拖动平移，用左侧搜索可以定位某个知识点</li>
           </ul>
           <p class="muted" style="font-size:12px;margin-top:10px">
             图谱完全由论文原文抽取，没有证据的内容不会出现在这里。</p>
@@ -854,5 +854,45 @@ onBeforeUnmount(() => {
   .kg-paper-row { align-items:flex-start; flex-direction:column; }
   .kg-scope-select { width:100%; }
 }
+
+
+/* Clean research workspace: remove decorative galaxy effects and prioritize legibility. */
+.kg-canvas-wrap {
+  background:
+    linear-gradient(rgba(94,116,142,.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(94,116,142,.045) 1px, transparent 1px),
+    linear-gradient(180deg,#fbfcfe 0%,#f4f7fb 100%);
+  background-size:32px 32px,32px 32px,auto;
+  border:1px solid #d8e1eb;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.9),0 8px 24px rgba(35,55,80,.06);
+}
+.nebula,.kg-canvas-wrap::before,.kg-canvas-wrap::after { display:none !important; }
+.kg-panel {
+  background:#fff;
+  color:#253449;
+  border:1px solid #dbe3ec;
+  box-shadow:0 8px 24px rgba(35,55,80,.06);
+}
+.kg-panel .muted { color:#718096 !important; }
+.p-head h3 { color:#1e293b; }
+.p-desc { color:#526174; }
+.p-alias { color:#718096; }
+.p-sec h4 { color:#68788c; }
+.rel-item { color:#334155; }
+.rel-item:hover { background:#f1f5f9; }
+.ev-item { border-left-color:#8ca5bf; background:#f8fafc; border-radius:0 7px 7px 0; }
+.ev-meta { color:#718096; }
+.ev-paper { color:#334b66; }
+.ev-text { color:#334155; }
+.ev-jump { color:#315f8b !important; }
+.kg-legend { color:#526174; background:rgba(255,255,255,.9); border:1px solid #dbe3ec; border-radius:8px; padding:7px 10px; }
+.kg-tip { color:#526174; background:rgba(255,255,255,.94); border:1px solid #dbe3ec; }
+.lg-line { border-top-color:#6887a8; }
+.lg-line.inf { border-top-color:#c47a43; }
+.lg-line.sim { border-top-color:#8064a9; }
+.relation-group-item { border:1px solid #e5ebf2; border-radius:8px; margin:8px 0; padding:12px; }
+.relation-group-item small { display:block; color:#718096; margin-top:4px; }
+.relation-group-item > span:last-child { color:#42698f; font-size:12px; white-space:nowrap; }
+.kg-panel-hint { color:#526174; }
 
 </style>
