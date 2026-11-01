@@ -41,6 +41,9 @@ jobs:
       - name: Install frontend dependencies
         working-directory: frontend
         run: npm ci
+      - name: Test graph edge aggregation
+        working-directory: frontend
+        run: npm run test:graph
       - name: Build frontend
         working-directory: frontend
         run: npm run build
