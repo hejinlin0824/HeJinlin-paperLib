@@ -280,7 +280,7 @@ def _create_kg_views(c):
              END AS evidence_type,
              COALESCE((SELECT MAX(ev.confidence) FROM kg_visible_evidence ev
                        WHERE ev.relation_id=r.id), 0.5) AS confidence,
-             r.status, r.created_by_paper, r.created_at
+             r.status, r.review_status, r.created_by_paper, r.created_at
       FROM kg_relations r
       WHERE EXISTS (SELECT 1 FROM kg_visible_evidence ev WHERE ev.relation_id=r.id);
     CREATE VIEW kg_visible_entities AS
