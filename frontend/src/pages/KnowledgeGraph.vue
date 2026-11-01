@@ -1,6 +1,6 @@
 <script setup>
 // 科研知识关系图：以实体类别组织空间，以真实关系表达知识联系。
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import * as SigmaPkg from 'sigma'
 import Graph from 'graphology'
 import api from '../api'
@@ -90,7 +90,10 @@ function fitCamera({ full = false, duration = 250 } = {}) {
     { padding: 90, minRatio: 0.06, maxRatio: 40 },
   )
   // 默认视图优先保持节点可辨；“适配全图”按钮完整适配整个边界框。
-  const ratio = full ? fit.ratio : Math.min(fit.ratio, 1.6)
+  // Sigma autoRescale already maps the complete graph extent into framedGraph.
+  // Camera ratio is a zoom multiplier in that normalized space, NOT graph units / pixels.
+  // 1 fits the complete graph; values above 1 zoom out and below 1 zoom in.
+  const ratio = full ? 1 : 0.95
   // Sigma v3 camera x/y live in normalized framed-graph space (roughly 0..1),
   // while layout positions and computeCameraFit centers are in raw graph space.
   // Convert explicitly or large semantic-lane coordinates move the camera off-canvas.
@@ -145,6 +148,10 @@ function renderGraph(data) {
       _relationCount: relations.length,
     })
   }
+  // Graphology mutations are observed by Sigma, but an explicit refresh makes the
+  // first frame deterministic after a hidden -> visible container transition.
+  renderer.resize(true)
+  renderer.refresh()
   // Expose the completed layout (not the previous graph state) for acceptance diagnostics.
   window.__kgLastRender = {
     nodes: visible.length, edges: shownEdges.length,
@@ -166,6 +173,8 @@ function renderGraph(data) {
 async function loadGraph() {
   loading.value = true
   try {
+    // switchView changes v-show first; wait until Vue has made the canvas measurable.
+    await nextTick()
     const params = {}
     if (view.value === 'global') {
       if (selPaper.value) params.paper_id = selPaper.value
@@ -329,17 +338,21 @@ function onSearch() {
 }
 
 function onGraphResize() {
+  if (renderer) renderer.resize(true)
   fitCamera({ full: fullViewMode, duration: 150 })
 }
 
 function ensureRenderer() {
-  // 惰性初始化：默认视图是"知识总览"，画布容器在 v-show 下 display:none（宽度 0），
-  // Sigma 构造时会抛 "Container has no width"。因此只在第一次真正渲染图时创建；
-  // allowInvalidContainer 兜底极端时序（refresh 时会重新量测容器尺寸）。
+  // 默认视图是"知识总览"，画布在 v-show 下不可见。loadGraph 会先 nextTick，
+  // 确保切换到关系探索后容器已经有真实尺寸，再创建 Sigma。
   if (renderer) return
+  const container = document.getElementById('kg-canvas')
+  const rect = container?.getBoundingClientRect()
+  if (!container || !rect || rect.width <= 0 || rect.height <= 0) {
+    throw new Error(`知识图谱画布尺寸无效：${rect?.width || 0}×${rect?.height || 0}`)
+  }
   graph = new Graph()
-  renderer = new Sigma(graph, document.getElementById('kg-canvas'), {
-    allowInvalidContainer: true,
+  renderer = new Sigma(graph, container, {
     enableEdgeEvents: true,
     minCameraRatio: 0.06,
     maxCameraRatio: 40,
