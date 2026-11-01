@@ -449,3 +449,12 @@ def test_test_only_evidence_cannot_upgrade_shared_relation(kg_db):
                          (rel["id"],))
     assert visible["evidence_type"] == "similarity"
     assert visible["confidence"] == pytest.approx(0.2)
+
+
+
+def test_test_paper_cannot_write_graph_even_if_storage_called_directly(kg_db):
+    seed_paper("test-paper")
+    app_db.ex("UPDATE papers SET library_role='test' WHERE id='test-paper'")
+    ents, rels, _ = validate_good("test-paper")
+    with pytest.raises(RuntimeError, match="不能写入"):
+        kg_store.replace_paper_extraction("test-paper", ents, rels)
