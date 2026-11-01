@@ -185,6 +185,11 @@ async def run_job(job_id: str):
         _mark(job_id, status="failed", stage="",
               error_message=f"全部抽取未通过校验（已有图谱保持不变）：{detail}")
         return
+    # 分类可能在耗时的 LLM 调用期间被用户修改；写库前再次检查。
+    latest_scope = row("SELECT library_role FROM papers WHERE id=?", (pid,))
+    if not latest_scope or latest_scope.get("library_role", "normal") != "normal":
+        _mark(job_id, status="cancelled", stage="", error_message="抽取期间论文被标记为测试/排除数据，结果未写入图谱")
+        return
     from .kg_store import replace_paper_extraction
     stats = replace_paper_extraction(pid, ents[:MAX_ENTITIES], rels[:MAX_RELATIONS])
     stats["warnings"] = warnings[:20]
