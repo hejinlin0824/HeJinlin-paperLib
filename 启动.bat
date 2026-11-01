@@ -28,13 +28,16 @@ if not exist ".venv\Scripts\python.exe" (
 
 rem 2.5) Read-only safety check: never start against a suspicious empty database.
 echo [SAFE] Checking the existing paper library (read-only)...
-".venv\\Scripts\\python.exe" tools\\check_library.py
+".venv\Scripts\python.exe" tools\check_library.py
 if errorlevel 1 goto :err_library
 
 rem 3) Synchronize backend dependencies.
 echo [2/5] Checking backend dependencies...
 ".venv\Scripts\python.exe" -m pip install -q -r backend\requirements.txt
-if errorlevel 1 goto :err_library
+if errorlevel 1 goto :err_backend_deps
+echo [ERROR] Library integrity check failed. No database or paper files were changed.
+goto :fail
+:err_library
 echo [ERROR] Library integrity check failed. No database or paper files were changed.
 goto :fail
 :err_backend_deps
