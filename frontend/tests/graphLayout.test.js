@@ -33,8 +33,8 @@ test('large graphs remain finite and every column respects the row limit', () =>
     assert.ok(p.row >= 0 && p.row < 12)
   }
 })
-test('unknown categories use a stable fallback lane', () => {
-  assert.equal(computeSemanticLayout([{ id: 'x', type: 'Unknown' }]).positions.x.lane, 4)
+test('unknown categories use a dedicated miscellaneous lane', () => {
+  assert.equal(computeSemanticLayout([{ id: 'x', type: 'Unknown' }]).positions.x.lane, 8)
 })
 test('empty graph returns safe bounds and camera defaults', () => {
   assert.deepEqual(computeSemanticLayout([]).bounds, null)
