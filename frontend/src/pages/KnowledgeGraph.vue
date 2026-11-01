@@ -83,6 +83,11 @@ const TYPE_LANE = {
 }
 const LANE_GAP = 250
 const ROW_GAP = 92
+// 真实库数据的密度验证结论：概念列可达 40+ 节点，单列 92px 行距会把整图撑到
+// 4000px 高，fit 全图后节点只剩 1-2px、标签全部低于阈值——视觉上等于空白。
+// 长列折成多子列，把画布高度控制在可读范围内。
+const LANE_MAX_ROWS = 12
+const SUBCOL_GAP = 180
 
 function forcePositions(nodes) {
   const lanes = new Map()
@@ -95,11 +100,13 @@ function forcePositions(nodes) {
   for (const [lane, items] of lanes) {
     items.sort((a, b) => (b.degree || 0) - (a.degree || 0)
       || String(a.label_zh || a.label).localeCompare(String(b.label_zh || b.label), 'zh-CN'))
-    const center = (items.length - 1) / 2
     items.forEach((node, index) => {
+      const col = Math.floor(index / LANE_MAX_ROWS)
+      const row = index % LANE_MAX_ROWS
+      const colCount = Math.min(LANE_MAX_ROWS, items.length - col * LANE_MAX_ROWS)
       result[node.id] = {
-        x: lane * LANE_GAP,
-        y: (index - center) * ROW_GAP,
+        x: lane * LANE_GAP + col * SUBCOL_GAP,
+        y: (row - (colCount - 1) / 2) * ROW_GAP,
       }
     })
   }
@@ -123,7 +130,10 @@ function fitCamera(duration = 250) {
   })
   const el = renderer.getContainer()
   const w = el.clientWidth || 1200, h = el.clientHeight || 700
-  const ratio = Math.max((maxX - minX + 120) / w, (maxY - minY + 120) / h)
+  // 缩放比封顶：fit 全图时节点会小到 1-2px（且标签全部隐藏），视觉上等于空白。
+  // 初始只放到最远 1.6×，保证节点可辨；全景由用户滚轮自行缩放。
+  const ratio = Math.max(0.05, Math.min(
+    Math.max((maxX - minX + 120) / w, (maxY - minY + 120) / h), 1.6))
   renderer.getCamera().animate(
     { x: (minX + maxX) / 2, y: (minY + maxY) / 2, ratio: Math.max(0.05, ratio), angle: 0 },
     { duration },
@@ -139,6 +149,12 @@ function renderGraph(data) {
   nodeCount.value = visible.length
   edgeCount.value = shownEdges.length
   const pos = forcePositions(visible)
+  window.__kgLastRender = {
+    nodes: visible.length, edges: shownEdges.length,
+    graphOrder: graph.order, graphSize: graph.size,
+    sample: visible[0] ? { id: visible[0].id, x: pos[visible[0].id]?.x, y: pos[visible[0].id]?.y } : null,
+    t: new Date().toISOString().slice(17, 23),
+  }
 
   hoveredNode = null
   hoveredNeighbors = new Set()
@@ -196,6 +212,7 @@ async function loadGraph() {
     }
     renderGraph(await api.kgGraph(params))
   } catch (e) {
+    window.__kgGraphError = String(e?.stack || e)
     toast('图谱加载失败：' + e.message, 'err')
   } finally {
     loading.value = false
@@ -355,7 +372,7 @@ function ensureRenderer() {
     enableEdgeEvents: true,
     minCameraRatio: 0.06,
     maxCameraRatio: 10,
-    labelRenderedSizeThreshold: 7,
+    labelRenderedSizeThreshold: 4,
     nodeLabelSize: 12,
     nodeLabelColor: '#263548',
     labelWeight: '600',
