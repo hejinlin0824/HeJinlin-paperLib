@@ -15,6 +15,8 @@ def overview() -> dict:
         "SELECT relation_type, COUNT(*) n FROM kg_visible_relations GROUP BY relation_type")}
     job_counts = {r["status"]: r["n"] for r in rows(
         "SELECT status, COUNT(*) n FROM kg_visible_jobs GROUP BY status")}
+    review_counts = {r["review_status"]: r["n"] for r in rows(
+        "SELECT review_status, COUNT(*) n FROM kg_visible_relations GROUP BY review_status")}
     return {
         "papers_total": row("SELECT COUNT(*) n FROM papers WHERE COALESCE(library_role, 'normal')='normal'")["n"],
         "papers_extracted": row(
@@ -24,6 +26,7 @@ def overview() -> dict:
         "entities": {t: ent_counts.get(t, 0) for t in sorted(ENTITY_TYPES) if ent_counts.get(t)},
         "relations_total": sum(rel_counts.values()),
         "relations": rel_counts,
+        "relation_review": review_counts,
         "inferred_relations": row(
             "SELECT COUNT(*) n FROM kg_visible_relations WHERE evidence_type='inferred'")["n"],
         "similarity_relations": row(
