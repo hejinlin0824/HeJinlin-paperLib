@@ -595,7 +595,7 @@ onBeforeUnmount(() => {
       <span>关系呈现：</span>
       <button class="btn sm" :class="{ primary: explorerMode === 'evidence' }" @click="setExplorerMode('evidence')">证据清单</button>
       <button class="btn sm" :class="{ primary: explorerMode === 'graph' }" @click="setExplorerMode('graph')">关系图</button>
-      <span class="kg-modehint">先读关系与原文依据，再按需查看网络结构</span>
+      <span class="kg-modehint">先核验每条关系是否被引文支持，再按需查看网络结构</span>
       <button v-if="view === 'global'" class="btn sm" :class="{ primary: showRejected }" @click="showRejected = !showRejected; loadGraph()">
         {{ showRejected ? '隐藏已驳回' : '显示已驳回' }}
       </button>
@@ -680,11 +680,12 @@ onBeforeUnmount(() => {
 
       <section v-if="explorerMode === 'evidence'" class="kg-evidence-list">
         <header class="kg-evidence-head">
-          <div><h3>可追溯关系</h3><p>每一项都能打开原文证据。默认仅列出论文原文明示的关系，不把 AI 推测当成事实。</p></div>
+          <div><h3>关系证据核验</h3><p>以下是模型抽取的候选关系。逐条检查引文是否真正支持这条关系；未人工确认前，不应当作可靠结论。</p></div>
           <strong>{{ relationRows.length }} 条</strong>
         </header>
-        <div v-if="!relationRows.length" class="kg-evidence-empty">
-          当前筛选条件下没有可展示的原文明示关系。可以切换论文、调整类型，或在证据筛选中单独开启 AI 推断。
+        <div v-if="loading" class="kg-evidence-empty">正在读取关系和原文证据…</div>
+        <div v-else-if="!relationRows.length" class="kg-evidence-empty">
+          当前筛选条件下没有关系。可以切换论文、调整类型，或在证据筛选中单独开启 AI 推断。
         </div>
         <article v-for="edge in relationRows" :key="edge.id" class="kg-evidence-row" @click="openRelation(edge.id)">
           <div class="kg-evidence-triple"><b>{{ edge.sourceLabel }}</b><span>{{ edge.relationLabel }} →</span><b>{{ edge.targetLabel }}</b></div>
