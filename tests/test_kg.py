@@ -475,3 +475,52 @@ def test_run_job_marks_failed_when_persist_raises(kg_db, monkeypatch):
     j = app_db.row("SELECT * FROM kg_extraction_jobs WHERE id=?", (job["id"],))
     assert j["status"] == "failed"
     assert "写入图谱失败" in j["error_message"]
+
+
+def test_graph_defaults_to_explicit_evidence_and_can_opt_in_to_inference(kg_db):
+    seed_paper("inferred-only")
+    ents, rels, _ = validate_good()
+    inferred = [r.model_copy(update={"evidence_type": "inferred"}) for r in rels]
+    kg_store.replace_paper_extraction("inferred-only", ents, inferred)
+
+    safe_graph = kg_queries.graph(paper_id="inferred-only")
+    exploratory_graph = kg_queries.graph(
+        paper_id="inferred-only", evidence_types=["inferred"])
+
+    assert safe_graph["nodes"]  # Nodes remain discoverable.
+    assert safe_graph["edges"] == []  # Inference is not silently presented as fact.
+    assert len(exploratory_graph["edges"]) == 3
+
+
+def test_relation_trust_summary_recomputed_after_reextraction(kg_db):
+    seed_paper("explicit-paper")
+    seed_paper("inferred-paper")
+    ents, rels, _ = validate_good()
+    kg_store.replace_paper_extraction("explicit-paper", ents, rels)
+
+    inferred_rels = [
+        r.model_copy(update={
+            "evidence_type": "inferred",
+            "confidence": 0.7,
+        }) for r in rels
+    ]
+    kg_store.replace_paper_extraction("inferred-paper", ents, inferred_rels)
+
+    algorithm = app_db.row(
+        "SELECT id FROM kg_entities WHERE canonical_name='FedProx'")
+    problem = app_db.row(
+        "SELECT id FROM kg_entities WHERE canonical_name='Statistical Heterogeneity'")
+    relation = app_db.row(
+        "SELECT * FROM kg_relations WHERE source_entity_id=? AND target_entity_id=? "
+        "AND relation_type='MITIGATES'",
+        (algorithm["id"], problem["id"]))
+    assert relation["evidence_type"] == "explicit"
+
+    # The explicit source is re-extracted and no longer asserts MITIGATES.
+    kg_store.replace_paper_extraction(
+        "explicit-paper", ents,
+        [r for r in rels if r.relation_type != "MITIGATES"])
+
+    relation = app_db.row("SELECT * FROM kg_relations WHERE id=?", (relation["id"],))
+    assert relation["evidence_type"] == "inferred"
+    assert relation["confidence"] == pytest.approx(0.7)
