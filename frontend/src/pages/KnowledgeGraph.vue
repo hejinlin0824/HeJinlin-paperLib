@@ -596,7 +596,7 @@ onBeforeUnmount(() => {
       <button class="btn sm" :class="{ primary: explorerMode === 'evidence' }" @click="setExplorerMode('evidence')">证据清单</button>
       <button class="btn sm" :class="{ primary: explorerMode === 'graph' }" @click="setExplorerMode('graph')">关系图</button>
       <span class="kg-modehint">先核验每条关系是否被引文支持，再按需查看网络结构</span>
-      <button v-if="view === 'global'" class="btn sm" :class="{ primary: showRejected }" @click="showRejected = !showRejected; loadGraph()">
+      <button class="btn sm" :class="{ primary: showRejected }" @click="showRejected = !showRejected; refreshCurrentGraph()">
         {{ showRejected ? '隐藏已驳回' : '显示已驳回' }}
       </button>
     </div>
