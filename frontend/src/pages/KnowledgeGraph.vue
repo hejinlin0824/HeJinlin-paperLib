@@ -71,6 +71,8 @@ let hoveredEdge = null
 let focusNode = ''
 let layoutBounds = null
 let fullViewMode = false
+// Only the newest graph request may mutate the shared Sigma graph.
+let graphRequestSequence = 0
 
 function fitCamera({ full = false, duration = 250 } = {}) {
   if (!renderer || !graph || !graph.order) return
@@ -171,24 +173,30 @@ function renderGraph(data) {
 }
 
 async function loadGraph() {
+  const requestId = ++graphRequestSequence
   loading.value = true
   try {
     // switchView changes v-show first; wait until Vue has made the canvas measurable.
     await nextTick()
+    // A newer filter/view action may have started while Vue was updating the DOM.
+    if (requestId !== graphRequestSequence || view.value !== 'global') return
     const params = {}
-    if (view.value === 'global') {
-      if (selPaper.value) params.paper_id = selPaper.value
-      else if (q.value.trim()) params.q = q.value.trim()
-      const ts = [...activeTypes.value]
-      if (ts.length) params.types = ts.join(',')
-      if (selRelation.value) params.relation_types = selRelation.value
-    }
-    renderGraph(await api.kgGraph(params))
+    if (selPaper.value) params.paper_id = selPaper.value
+    else if (q.value.trim()) params.q = q.value.trim()
+    const ts = [...activeTypes.value]
+    if (ts.length) params.types = ts.join(',')
+    if (selRelation.value) params.relation_types = selRelation.value
+
+    const data = await api.kgGraph(params)
+    // Never let a slower, stale response replace the latest graph with old/empty data.
+    if (requestId !== graphRequestSequence || view.value !== 'global') return
+    renderGraph(data)
   } catch (e) {
+    if (requestId !== graphRequestSequence) return
     window.__kgGraphError = String(e?.stack || e)
     toast('图谱加载失败：' + e.message, 'err')
   } finally {
-    loading.value = false
+    if (requestId === graphRequestSequence) loading.value = false
   }
 }
 
@@ -215,17 +223,29 @@ async function openTopics() {
 }
 
 async function pickTopic(t) {
+  const requestId = ++graphRequestSequence
   activeTopic.value = t
   panel.value = { kind: 'topic', topic: t }
   loading.value = true
   try {
-    renderGraph(await api.kgGraph({ entity_ids: t.entity_ids.join(',') }))
+    await nextTick()
+    const data = await api.kgGraph({ entity_ids: t.entity_ids.join(',') })
+    if (requestId !== graphRequestSequence || view.value !== 'topics' || activeTopic.value !== t) return
+    renderGraph(data)
+  } catch (e) {
+    if (requestId === graphRequestSequence) {
+      window.__kgGraphError = String(e?.stack || e)
+      toast('主题图谱加载失败：' + e.message, 'err')
+    }
   } finally {
-    loading.value = false
+    if (requestId === graphRequestSequence) loading.value = false
   }
 }
 
 function switchView(v) {
+  // Invalidate pending responses before changing which view owns the graph canvas.
+  graphRequestSequence += 1
+  loading.value = false
   view.value = v
   panel.value = { kind: 'empty' }
   activeTopic.value = null
