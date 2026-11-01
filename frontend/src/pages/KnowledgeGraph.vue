@@ -789,6 +789,7 @@ onBeforeUnmount(() => {
               <div class="ev-meta">
                 <span class="ev-paper">{{ e.paper_title }}</span>
                 <span v-if="e.section_name" class="muted">· {{ e.section_name }}</span>
+                <span class="ev-badge" :class="e.evidence_type">{{ EVI_LABEL[e.evidence_type] || e.evidence_type }}</span>
               </div>
               <div class="ev-text">“{{ e.evidence_text }}”</div>
               <a v-if="!e.stale" class="ev-jump" :href="readerUrl(e.paper_id, e.block_id)" target="_blank">定位原文 ↗</a>
