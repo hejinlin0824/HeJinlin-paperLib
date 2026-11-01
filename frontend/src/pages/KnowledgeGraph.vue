@@ -536,7 +536,6 @@ onBeforeUnmount(() => {
           <button class="btn sm" type="button" @click="fitCamera({ full: true })">适配全图</button>
           <button class="btn sm" type="button" @click="fitCamera({ full: false })">可读视图</button>
         </div>
-        <div class="nebula"></div>
         <div id="kg-canvas"></div>
         <div v-if="loading" class="kg-loading">知识关系图加载中…</div>
         <div v-if="graphData && !graphData.nodes.length && !loading" class="kg-empty">
