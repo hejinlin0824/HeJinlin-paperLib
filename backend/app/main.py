@@ -10,7 +10,7 @@ from starlette.responses import FileResponse
 
 from .config import FRONTEND_DIST, PAPERS_DIR
 from .db import init_db
-from .routers import annotations, dict, log, papers, questions, settings
+from .routers import annotations, dict, kg, log, papers, questions, settings
 
 app = FastAPI(title="论文图书馆", version="0.1.0")
 
@@ -27,6 +27,7 @@ app.include_router(questions.router)
 app.include_router(log.router)
 app.include_router(settings.router)
 app.include_router(dict.router)
+app.include_router(kg.router)
 
 # 只公开论文 PDF / 图片目录；绝不能把整个 data/ 挂载出去（其中包含 library.db 和密钥）。
 # URL 继续保持 /files/papers/{paper_id}/...，与阅读器现有链接兼容。
@@ -68,6 +69,10 @@ def _startup():
             "error=CASE WHEN (SELECT COUNT(*) FROM blocks b WHERE b.paper_id=papers.id)>0 "
             "THEN error ELSE '任务因服务重启中断，请重新解析' END "
             "WHERE status IN ('parsing', 'pending_parse')")
+        # 知识抽取任务同样做僵尸恢复：进程刚启动不可能有正在运行的任务
+        c.execute("UPDATE kg_extraction_jobs SET status='failed', stage='', "
+                  "error_message='任务因服务重启中断，可重试' "
+                  "WHERE status IN ('running', 'pending')")
 
 
 if __name__ == "__main__":

@@ -102,6 +102,69 @@ CREATE TABLE IF NOT EXISTS dict_cards(
   context_note TEXT DEFAULT '',
   created_at TEXT DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS kg_entities(
+  id TEXT PRIMARY KEY,
+  entity_type TEXT NOT NULL,
+  canonical_name TEXT NOT NULL,
+  normalized_name TEXT NOT NULL,
+  description TEXT DEFAULT '',
+  metadata_json TEXT DEFAULT '{}',
+  created_at TEXT DEFAULT '',
+  updated_at TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_kg_ent_norm ON kg_entities(entity_type, normalized_name);
+CREATE TABLE IF NOT EXISTS kg_entity_aliases(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entity_id TEXT NOT NULL,
+  alias TEXT NOT NULL,
+  normalized_alias TEXT NOT NULL,
+  source TEXT DEFAULT '',
+  UNIQUE(entity_id, normalized_alias)
+);
+CREATE INDEX IF NOT EXISTS idx_kg_alias_norm ON kg_entity_aliases(normalized_alias);
+CREATE TABLE IF NOT EXISTS kg_relations(
+  id TEXT PRIMARY KEY,
+  source_entity_id TEXT NOT NULL,
+  target_entity_id TEXT NOT NULL,
+  relation_type TEXT NOT NULL,
+  evidence_type TEXT NOT NULL DEFAULT 'explicit',
+  confidence REAL NOT NULL DEFAULT 0.5,
+  status TEXT NOT NULL DEFAULT 'active',
+  created_by_paper TEXT DEFAULT '',
+  created_at TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_kg_rel_src ON kg_relations(source_entity_id);
+CREATE INDEX IF NOT EXISTS idx_kg_rel_tgt ON kg_relations(target_entity_id);
+CREATE TABLE IF NOT EXISTS kg_evidence(
+  id TEXT PRIMARY KEY,
+  entity_id TEXT DEFAULT '',
+  relation_id TEXT DEFAULT '',
+  paper_id TEXT NOT NULL,
+  block_id INTEGER,
+  evidence_text TEXT NOT NULL,
+  section_name TEXT DEFAULT '',
+  confidence REAL DEFAULT 0.5,
+  evidence_type TEXT NOT NULL DEFAULT 'explicit',
+  created_at TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_kg_evi_paper ON kg_evidence(paper_id);
+CREATE INDEX IF NOT EXISTS idx_kg_evi_rel ON kg_evidence(relation_id);
+CREATE INDEX IF NOT EXISTS idx_kg_evi_ent ON kg_evidence(entity_id);
+CREATE TABLE IF NOT EXISTS kg_extraction_jobs(
+  id TEXT PRIMARY KEY,
+  paper_id TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  stage TEXT DEFAULT '',
+  progress REAL DEFAULT 0,
+  error_message TEXT DEFAULT '',
+  extraction_version TEXT DEFAULT '',
+  model_name TEXT DEFAULT '',
+  prompt_version TEXT DEFAULT '',
+  stats_json TEXT DEFAULT '{}',
+  created_at TEXT DEFAULT '',
+  updated_at TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_kg_job_paper ON kg_extraction_jobs(paper_id, status);
 """
 
 DEFAULT_SETTINGS = {
@@ -117,6 +180,8 @@ DEFAULT_SETTINGS = {
     "mineru_token": "",
     # 解析完成后自动开始翻译
     "auto_translate": "1",
+    # 解析完成后自动抽取知识图谱（可在设置页关闭）
+    "kg_auto_extract": "1",
 }
 
 
