@@ -246,11 +246,28 @@ async function setExplorerMode(mode) {
   }
 }
 
+async function refreshCurrentGraph() {
+  if (view.value === 'global') return loadGraph()
+  if (view.value !== 'topics' || !activeTopic.value) return
+  const requestId = ++graphRequestSequence
+  loading.value = true
+  try {
+    const data = await api.kgGraph({
+      entity_ids: activeTopic.value.entity_ids.join(','),
+      evidence_types: [...activeEvidenceTypes.value].join(','),
+      include_rejected: showRejected.value ? 'true' : 'false',
+    })
+    if (requestId === graphRequestSequence && view.value === 'topics') renderGraph(data)
+  } finally {
+    if (requestId === graphRequestSequence) loading.value = false
+  }
+}
+
 async function reviewRelation(edge, status) {
   try {
     await api.kgReviewRelation(edge.id, status)
     toast(status === 'verified' ? '已确认这条关系' : status === 'rejected' ? '已驳回这条关系（证据保留）' : '已恢复为待核验', 'ok')
-    await loadGraph()
+    await refreshCurrentGraph()
   } catch (e) {
     toast('关系审核失败：' + e.message, 'err')
   }
@@ -579,7 +596,7 @@ onBeforeUnmount(() => {
       <button class="btn sm" :class="{ primary: explorerMode === 'evidence' }" @click="setExplorerMode('evidence')">证据清单</button>
       <button class="btn sm" :class="{ primary: explorerMode === 'graph' }" @click="setExplorerMode('graph')">关系图</button>
       <span class="kg-modehint">先读关系与原文依据，再按需查看网络结构</span>
-      <button class="btn sm" :class="{ primary: showRejected }" @click="showRejected = !showRejected; loadGraph()">
+      <button v-if="view === 'global'" class="btn sm" :class="{ primary: showRejected }" @click="showRejected = !showRejected; loadGraph()">
         {{ showRejected ? '隐藏已驳回' : '显示已驳回' }}
       </button>
     </div>
