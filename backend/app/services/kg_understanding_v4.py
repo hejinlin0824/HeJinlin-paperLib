@@ -122,15 +122,13 @@ def _batch_chunk_prompt(title: str, batch_id: int, indexes: list[int], chunks: l
     parts = [f"论文：{title}", f"本请求包含 {len(indexes)} 个独立片段。必须逐个分析，不能跨片段合并证据。"]
     for index in indexes:
         chunk = chunks[index]
-        parts.append(f"<chunk id=\"{index}\">\\n{v31._chunk_prompt(title, chunk)}\\n</chunk>")
+        parts.append(f"<chunk id=\"{index}\">\n{v31._chunk_prompt(title, chunk)}\n</chunk>")
     parts.append(
-        "只输出 JSON：{\\\"chunks\\\":[{\\\"chunk_id\\\":0,\\\"section_role\\\":\\\"...\\\","
-        "\\\"summary\\\":\\\"...\\\",\\\"claims\\\":[],\\\"argument_steps\\\":[],"
-        "\\\"candidate_contributions\\\":[],\\\"open_questions\\\":[]}] }。"
+        '只输出 JSON：{"chunks":[{"chunk_id":0,"section_role":"...","summary":"...",'
+        '"claims":[],"argument_steps":[],"candidate_contributions":[],"open_questions":[]}]}。'
         "chunks 数组必须对输入的每个 chunk id 恰好返回一项；不得遗漏、重复或改写 block_id。"
     )
-    return "\\n\\n".join(parts)
-
+    return "\n\n".join(parts)
 
 def _normalise_batch_notes(raw_response: str, expected: list[int], chunks: list[dict]) -> dict[int, dict]:
     parsed = legacy._json(raw_response)
@@ -206,7 +204,7 @@ async def run_understanding(draft_id: str) -> None:
             batches = _build_chunk_batches(chunks)
             payload["pipeline"]["chunk_batches"] = len(batches)
             payload["pipeline"]["chunk_batch_sizes"] = [len(batch) for batch in batches]
-            payload["pipeline"]["llm_operations"] += len(batches)
+            payload["pipeline"]["llm_operations"] += sum(1 for batch in batches if len(batch) > 1)
 
             async def analyze_single(index: int):
                 chunk = chunks[index]
