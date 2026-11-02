@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .cleaning import (clean_blocks, clean_extracted_text, is_standalone_footnote,
                       new_cleaning_report, record_removed)
+from .paper_document_contract import normalize_mineru_document, validate_mineru_document
 
 
 def _copy_asset(src_name: str, assets_src: Path, work_dir: Path):
@@ -162,23 +163,24 @@ def _merge_references(blocks: list) -> list:
 def from_content_list(data: list, assets_src: Path, work_dir: Path, cleaning_report=None):
     cleaning_report = cleaning_report if cleaning_report is not None else new_cleaning_report()
     blocks = []
-    for it in data:
+    for source_index, it in enumerate(data):
         t = it.get("type", "text")
         page = (it.get("page_idx") or 0) + 1
+        source_meta = {"page": page, "mineru_type": t, "mineru_source_index": source_index,
+                       "page_idx": it.get("page_idx"), "bbox": it.get("bbox")}
         if t == "image":
             blocks.append({"type": "image",
                            "en": _cap_text(it.get("img_caption")),
-                           "meta": {"page": page,
-                                    "path": _copy_asset(it.get("img_path", ""), assets_src, work_dir)}})
+                           "meta": {**source_meta, "path": _copy_asset(it.get("img_path", ""), assets_src, work_dir)}})
         elif t == "table":
             blocks.append({"type": "table",
                            "en": _cap_text(it.get("table_caption")),
-                           "meta": {"page": page, "html": it.get("table_body") or ""}})
+                           "meta": {**source_meta, "html": it.get("table_body") or ""}})
         elif t == "equation":
             # MinerU 的公式文本常带 $$ 包裹，剥掉后存纯 LaTeX
             latex = re.sub(r"^\$\$+|\$\$+$", "", (it.get("text") or "").strip()).strip()
             blocks.append({"type": "formula", "en": latex,
-                           "meta": {"page": page, "latex": latex}})
+                           "meta": {**source_meta, "latex": latex}})
         else:  # text
             raw = (it.get("text") or "").strip()
             if _is_footnote(raw):
@@ -190,7 +192,7 @@ def from_content_list(data: list, assets_src: Path, work_dir: Path, cleaning_rep
             text = _clean_text(text)
             if not text:
                 continue
-            m = {"page": page}
+            m = dict(source_meta)
             if it.get("text_level"):
                 blocks.append({"type": "heading", "en": text, "meta": {**m, "level": it["text_level"]}})
             else:
@@ -284,7 +286,10 @@ def from_mineru_dir(extract_dir: Path, work_dir: Path):
             if blocks:
                 for idx, b in enumerate(blocks):
                     b["order_idx"] = idx
-                return {"blocks": blocks, "meta": {"cleaning_report": cleaning_report}}
+                document = normalize_mineru_document(blocks, engine="mineru")
+                return {"blocks": document["blocks"], "meta": {"cleaning_report": cleaning_report,
+                        "document_contract": {key: value for key, value in document.items() if key != "blocks"},
+                        "document_validation_errors": validate_mineru_document(document)}}
         except Exception:
             pass
     mds = [p for p in extract_dir.rglob("*.md") if p.name != "index.md"]
@@ -294,4 +299,7 @@ def from_mineru_dir(extract_dir: Path, work_dir: Path):
     blocks = from_markdown(md, assets_src, work_dir, cleaning_report)
     for idx, b in enumerate(blocks):
         b["order_idx"] = idx
-    return {"blocks": blocks, "meta": {"cleaning_report": cleaning_report}}
+    document = normalize_mineru_document(blocks, engine="mineru_markdown_fallback")
+    return {"blocks": document["blocks"], "meta": {"cleaning_report": cleaning_report,
+            "document_contract": {key: value for key, value in document.items() if key != "blocks"},
+            "document_validation_errors": validate_mineru_document(document)}}

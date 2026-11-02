@@ -16,6 +16,10 @@ from .paper_understanding_common import (
 )
 from . import paper_intelligence_v4 as intelligence
 from .translate import chat, engine_info, engine_ready
+from .structured_output import (
+    batch_chunk_schema, chunk_analysis_schema, parse_and_validate,
+    response_format as make_response_format, synthesis_schema, verification_schema,
+)
 
 logger = logging.getLogger(__name__)
 VERSION = "4.0"
@@ -67,9 +71,56 @@ def _fallback_payload(title: str, section_map: list[dict], candidates: list[dict
     }
 
 
-async def _chat_v4(info: dict, messages: list, max_tokens: int):
-    """V4 uses bounded waits/retries; legacy translation keeps its original defaults."""
-    return await chat(info, messages, max_tokens=max_tokens, timeout_seconds=90, retries=2)
+async def _chat_v4(info: dict, messages: list, max_tokens: int,
+                   schema_name: str | None = None, schema: dict | None = None):
+    """Prefer strict JSON Schema, degrade only for explicit provider capability errors."""
+    kwargs = {"max_tokens": max_tokens, "timeout_seconds": 90, "retries": 2}
+    if schema is None or not schema_name:
+        return await chat(info, messages, **kwargs)
+    constrained = make_response_format(schema_name, schema)
+    try:
+        return await chat(info, messages, response_format=constrained, **kwargs)
+    except RuntimeError as exc:
+        detail = str(exc).lower()
+        unsupported = any(token in detail for token in (
+            "response_format", "json_schema", "unsupported parameter", "not support",
+            "unknown field", "unrecognized request argument",
+        ))
+        if not unsupported:
+            raise
+        logger.warning("Provider rejected strict JSON Schema; trying JSON mode: %s", type(exc).__name__)
+    try:
+        return await chat(info, messages, response_format={"type": "json_object"}, **kwargs)
+    except RuntimeError as exc:
+        detail = str(exc).lower()
+        if not any(token in detail for token in ("response_format", "json_object", "unsupported parameter", "not support")):
+            raise
+        logger.warning("Provider rejected JSON mode; falling back to prompt-only JSON: %s", type(exc).__name__)
+        return await chat(info, messages, **kwargs)
+
+
+async def probe_structured_output() -> dict:
+    """Explicit, user-triggered capability probe; never runs during startup or CI."""
+    info = engine_info()
+    ready, reason = engine_ready(info)
+    if not ready:
+        return {"status": "not_configured", "provider": info.get("provider"),
+                "model": info.get("model"), "reason": reason}
+    schema = {"type": "object", "properties": {"ok": {"type": "boolean"}},
+              "required": ["ok"], "additionalProperties": False}
+    try:
+        raw = await chat(info, [
+            {"role": "system", "content": "Return the requested JSON object."},
+            {"role": "user", "content": "Return exactly {\"ok\": true}."},
+        ], max_tokens=80, timeout_seconds=30, retries=1,
+           response_format=make_response_format("paperlib_capability_probe", schema))
+        value = parse_and_validate(raw, schema)
+        return {"status": "supported", "mode": "json_schema", "provider": info.get("provider"),
+                "model": info.get("model"), "valid_response": value}
+    except Exception as exc:
+        return {"status": "unsupported_or_failed", "mode": "json_schema",
+                "provider": info.get("provider"), "model": info.get("model"),
+                "error_type": type(exc).__name__, "reason": str(exc)[:500]}
 
 
 def _compact_notes(notes: list[dict], max_chars: int = 48000) -> tuple[str, dict]:
@@ -193,8 +244,8 @@ async def run_understanding(draft_id: str) -> None:
                 raw_response = await _chat_v4(info, [
                     {"role": "system", "content": CHUNK_SYSTEM},
                     {"role": "user", "content": _chunk_prompt(title, chunk)},
-                ], max_tokens=2200)
-                result = legacy._json(raw_response)
+                ], max_tokens=2200, schema_name="paperlib_v4_chunk", schema=chunk_analysis_schema())
+                result = parse_and_validate(raw_response, chunk_analysis_schema())
                 if not result:
                     preview = " ".join(str(raw_response or "").split())[:180]
                     raise RuntimeError(
@@ -215,7 +266,9 @@ async def run_understanding(draft_id: str) -> None:
                                  '严格返回 {"chunks":[{"chunk_id":整数,"section_role":...,"summary":...,'
                                  '"claims":...,"argument_steps":...,"candidate_contributions":...,"open_questions":...}]}。'},
                                 {"role": "user", "content": _batch_chunk_prompt(title, batch_number, indexes, chunks)},
-                            ], max_tokens=min(6600, 2200 * len(indexes)))
+                            ], max_tokens=min(6600, 2200 * len(indexes)),
+                                schema_name="paperlib_v4_chunk_batch", schema=batch_chunk_schema())
+                            parse_and_validate(raw, batch_chunk_schema())
                             batch_notes = _normalise_batch_notes(raw, indexes, chunks)
                         except Exception as exc:
                             logger.warning("V4 chunk batch %s failed; falling back to single chunks: %s",
@@ -277,10 +330,11 @@ async def run_understanding(draft_id: str) -> None:
             synthesis_started = time.perf_counter()
             try:
                 payload["pipeline"]["llm_operations"] += 1
-                result = legacy._json(await _chat_v4(info, [
+                synthesis_raw = await _chat_v4(info, [
                     {"role": "system", "content": SYNTHESIS_SYSTEM},
                     {"role": "user", "content": f"论文标题：{title}\n章节分块分析（证据均带 block_id；共 {compact_stats['chunks_included']} 个分块）：\n{compact_notes}"},
-                ], max_tokens=7500))
+                ], max_tokens=7500, schema_name="paperlib_v4_synthesis", schema=synthesis_schema())
+                result = parse_and_validate(synthesis_raw, synthesis_schema())
                 if not result:
                     raise RuntimeError("论文综合阶段未返回合法 JSON")
                 for key in ("contributions", "theoretical_framework", "method_architecture", "key_findings",
@@ -345,10 +399,11 @@ async def run_understanding(draft_id: str) -> None:
             verification_started = time.perf_counter()
             try:
                 payload["pipeline"]["llm_operations"] += 1
-                verdicts = legacy._json(await _chat_v4(info, [
-                    {"role": "system", "content": "你是学术关系语义核验器。逐条判断证据是否蕴含关系。联合充分关系必须把所有前提作为整体检查。不得依赖常识补足证据。只输出 JSON，格式为 verifications 数组，每项包含 id、verdict（entailed/not_entailed/uncertain）、reason。"},
+                verification_raw = await _chat_v4(info, [
+                    {"role": "system", "content": "你是学术关系语义核验器。逐条判断证据是否蕴含关系。联合充分关系必须把所有前提作为整体检查。不得依赖常识补足证据。输出符合 Schema 的 verifications 数组。"},
                     {"role": "user", "content": json.dumps({"edges": edges}, ensure_ascii=False)},
-                ], max_tokens=2200))
+                ], max_tokens=2200, schema_name="paperlib_v4_verifications", schema=verification_schema())
+                verdicts = parse_and_validate(verification_raw, verification_schema())
                 by_id = {str(x.get("id")): x for x in (verdicts or {}).get("verifications", []) if isinstance(x, dict)}
                 for collection in (payload.get("relations", []), payload.get("theory_logic", [])):
                     for edge in collection:

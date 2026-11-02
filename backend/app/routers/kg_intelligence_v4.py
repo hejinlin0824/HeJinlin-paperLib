@@ -87,3 +87,10 @@ def structure_candidates(paper_id: str):
         return service.structure_candidates(paper_id)
     except RuntimeError as exc:
         raise HTTPException(400, str(exc))
+
+
+
+@router.post("/structured-output/probe")
+async def probe_structured_output():
+    """Explicitly test whether the configured provider/model accepts strict JSON Schema."""
+    return await service.probe_structured_output()

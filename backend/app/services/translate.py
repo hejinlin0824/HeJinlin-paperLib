@@ -89,7 +89,8 @@ def _clean(text: str) -> str:
 
 
 async def chat(info: dict, messages: list, max_tokens: int | None = None,
-               timeout_seconds: int = 180, retries: int = 3) -> str:
+               timeout_seconds: int = 180, retries: int = 3,
+               response_format: dict | None = None) -> str:
     """调用 OpenAI 兼容 /chat/completions。
 
     某些推理模型会把 max_tokens 预算优先用于 reasoning，导致 message.content 为空。
@@ -102,6 +103,8 @@ async def chat(info: dict, messages: list, max_tokens: int | None = None,
             "temperature": info["temperature"]}
     if max_tokens:
         body["max_tokens"] = max_tokens
+    if response_format is not None:
+        body["response_format"] = response_format
     headers = {"Content-Type": "application/json"}
     if info["api_key"]:
         headers["Authorization"] = f"Bearer {info['api_key']}"

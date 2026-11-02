@@ -1,5 +1,6 @@
 [CmdletBinding()]
 param(
+    [ValidateSet('unit','integration','full-sim','real')][string]$Tier = 'full-sim',
     [switch]$InstallDependencies,
     [switch]$SkipFrontend,
     [switch]$LauncherPreflight,
@@ -66,11 +67,17 @@ try {
     }
 
     $env:PYTHONPATH = (Join-Path $root "backend")
-    Invoke-TestStep "Backend regression tests" {
-        & $python -m pytest -q (Join-Path $root "tests")
+    if ($Tier -eq "unit") {
+        Invoke-TestStep "Synthetic document/schema/evaluation unit tests" {
+            & $python -m pytest -q (Join-Path $root "tests\test_document_and_eval_contracts.py")
+        }
+    } else {
+        Invoke-TestStep "Backend regression tests" {
+            & $python -m pytest -q (Join-Path $root "tests")
+        }
     }
 
-    if (-not $SkipFrontend) {
+    if ($Tier -in @("full-sim", "real") -and -not $SkipFrontend) {
         $frontend = Join-Path $root "frontend"
         if ($InstallDependencies -or -not (Test-Path (Join-Path $frontend "node_modules"))) {
             Invoke-TestStep "Install frontend dependencies" {
@@ -88,7 +95,7 @@ try {
         }
     }
 
-    if ($LauncherPreflight) {
+    if ($LauncherPreflight -and $Tier -in @("full-sim", "real")) {
         if (-not (Test-Path (Join-Path $root ".venv\Scripts\python.exe"))) {
             Invoke-TestStep "Create local virtual environment" {
                 & $python -m venv (Join-Path $root ".venv")
@@ -110,6 +117,8 @@ try {
         }
     }
 
+    if ($Tier -eq "real" -and -not $RunLiveModel) { throw "Tier real requires -RunLiveModel -PaperId <existing-paper-id>." }
+    if ($Tier -ne "real" -and $RunLiveModel) { throw "-RunLiveModel is only allowed with -Tier real." }
     if ($RunLiveModel) {
         if ([string]::IsNullOrWhiteSpace($PaperId)) {
             throw "-RunLiveModel requires -PaperId <existing-paper-id>."
@@ -194,6 +203,7 @@ finally {
     $finished = Get-Date
     $summary = [ordered]@{
         project = "HeJinlin-paperLib"
+        tier = $Tier
         test_scope = if ($RunLiveModel) { "offline regression, frontend build, and explicitly requested live model analysis" } else { "offline regression and frontend build; no real model API calls" }
         started_at = $started.ToString("o")
         finished_at = $finished.ToString("o")

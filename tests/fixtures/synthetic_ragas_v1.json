@@ -1,0 +1,18 @@
+{
+  "questions": [
+    "What is the synthetic widget?",
+    "Which equation is included?"
+  ],
+  "answers": [
+    "A widget is a deterministic test object.",
+    "The document includes x squared plus y squared equals z squared."
+  ],
+  "contexts": [
+    ["Definition 1. A widget is a deterministic test object."],
+    ["x^2 + y^2 = z^2"]
+  ],
+  "ground_truths": [
+    "A widget is a deterministic test object.",
+    "The equation is x^2 + y^2 = z^2."
+  ]
+}

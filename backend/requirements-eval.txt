@@ -1,0 +1,3 @@
+# Optional evaluation dependencies. Never installed by the normal app/test setup.
+ragas>=0.2,<0.4
+datasets>=2.18

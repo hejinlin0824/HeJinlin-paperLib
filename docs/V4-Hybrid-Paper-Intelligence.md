@@ -133,3 +133,57 @@ Optional switches:
 The optional live mode starts a temporary local API server if port 8300 is not already serving PaperLib, submits one V4 understanding job for the selected paper, polls its draft, and writes `live-model-report.json`. It uses the model/provider configured in PaperLib settings and can incur API charges. It adds a V4 draft and local search-index rows to the selected paper's library database; it does not approve/import the draft into the formal knowledge graph. Do not use a paper ID unless you intend to create this test draft.
 
 Logs and a JSON summary are written to a timestamped directory under `$env:TEMP\paperlib-v4-test-*`. The default command makes no real model API calls.
+
+
+## V4.2 · structured documents, constrained generation and offline evaluation
+
+### MinerU structured-document contract
+
+MinerU remains the PDF structure parser; V4 does not introduce GROBID or another duplicate parser.
+The content-list adapter retains source order, source type, page index, page number and bounding box
+in block metadata. The normalized internal contract is `paper-document/1.0`, with typed blocks
+(`heading`, `text`, `list`, `table`, `formula`, `image`, `references`), a stable order index,
+and source provenance. Table HTML/Markdown and formula LaTeX are retained separately from captions.
+The markdown fallback is explicitly labeled as such because it may not retain MinerU-only layout data.
+
+### Schema Constrained Output
+
+V4 requests strict JSON Schema output for chunk analysis, synthesis and relation verification when
+the configured OpenAI-compatible endpoint supports it. Local validation still runs on every response.
+If a provider rejects `json_schema`, V4 attempts JSON mode, then prompt-only JSON as a compatibility
+fallback; schema failures are recorded as failed chunks or recoverable synthesis/verification warnings.
+This fallback does not imply the proxy supports constrained decoding.
+
+The capability probe is user-triggered and may make one small model API request:
+`POST /api/knowledge-graph/v4/structured-output/probe`. It is never run during startup or offline CI.
+It reports whether the currently configured provider/model accepted and returned a schema-valid response.
+
+### Synthetic-first testing policy
+
+Routine tests use small synthetic MinerU content-list fixtures and deterministic mocked model responses.
+They do not open a real PDF, call MinerU cloud/local services, call a model API, or use the formal
+paper library database. The test tiers are:
+
+- `unit`: document contract, schema validation and evaluation fixture contracts;
+- `integration`: all backend tests against disposable SQLite databases;
+- `full-sim`: backend integration tests plus frontend graph tests and production build;
+- `real`: only after offline tiers pass, and only with explicit `-RunLiveModel -PaperId` arguments.
+
+### Ragas
+
+The small synthetic Ragas fixture is versioned at `tests/fixtures/synthetic_ragas_v1.json`.
+Install the optional evaluator dependencies with `pip install -r backend/requirements-eval.txt`,
+then run `python tools/evaluate_ragas_fixture.py`. This is opt-in and does not affect normal app
+installation or CI. Ragas metrics are supplementary; semantic quality still requires a curated,
+human-checked gold set and evidence-level validation. Routine tests only validate fixture shape and
+the adapter's graceful behavior when Ragas is not installed.
+
+
+Ragas with explicit adapters (no implicit cloud defaults):
+
+```powershell
+python tools/evaluate_ragas_fixture.py --adapters-module your_local_ragas_adapters
+```
+
+The adapter module must expose `build_llm()` and `build_embeddings()`. Without both,
+the command reports `configuration_required` and makes no model or embedding requests.
