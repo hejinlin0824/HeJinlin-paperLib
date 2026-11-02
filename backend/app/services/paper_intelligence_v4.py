@@ -300,11 +300,15 @@ def search_approved_graph(query: str, paper_id: str | None = None, top_k: int = 
         paths = []
         related_ids = set(selected)
         for edge in payload.get("relations") or []:
+            if edge.get("verification") not in {"entailed", "evidence_supported"}:
+                continue
             source, target = str(edge.get("source_id") or ""), str(edge.get("target_id") or "")
             if source in selected or target in selected:
                 paths.append({"kind": "directed_relation", **edge})
                 related_ids.update(x for x in (source, target) if x in by_id)
         for edge in payload.get("theory_logic") or []:
+            if edge.get("verification") not in {"entailed", "evidence_supported"}:
+                continue
             sources = [str(x) for x in edge.get("source_ids") or []]
             target = str(edge.get("target_id") or "")
             if selected.intersection(sources) or target in selected:
