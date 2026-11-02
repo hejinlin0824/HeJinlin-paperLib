@@ -1,0 +1,3 @@
+# Optional local dense retrieval only. The core application remains lightweight and
+# works without these packages using deterministic BM25 lexical retrieval.
+FlagEmbedding>=1.3.5
