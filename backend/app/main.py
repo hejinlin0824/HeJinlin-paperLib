@@ -11,7 +11,7 @@ from starlette.responses import FileResponse
 from .config import FRONTEND_DIST, PAPERS_DIR
 from .db import init_db
 from .util import now
-from .routers import annotations, dict, kg, kg_understanding, log, papers, questions, settings
+from .routers import annotations, dict, kg, kg_understanding, kg_intelligence_v4, log, papers, questions, settings
 
 app = FastAPI(title="论文图书馆", version="0.1.0")
 
@@ -29,7 +29,7 @@ app.include_router(log.router)
 app.include_router(settings.router)
 app.include_router(dict.router)
 app.include_router(kg.router)
-app.include_router(kg_understanding.router)
+app.include_router(kg_understanding.router)\napp.include_router(kg_intelligence_v4.router)
 
 # 只公开论文 PDF / 图片目录；绝不能把整个 data/ 挂载出去（其中包含 library.db 和密钥）。
 # URL 继续保持 /files/papers/{paper_id}/...，与阅读器现有链接兼容。
