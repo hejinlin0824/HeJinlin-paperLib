@@ -103,3 +103,14 @@ def test_new_draft_uses_v31_and_keeps_legacy_graph_isolated(isolated_db):
     assert v31.get_draft(draft["id"])["version"] == "3.1"
     assert app_db.row("SELECT COUNT(*) n FROM kg_entities")["n"] == 0
     assert app_db.row("SELECT COUNT(*) n FROM kg_relations")["n"] == 0
+
+def test_v31_compaction_is_local_and_preserves_evidence_quotes():
+    note = {"title": "Theory", "section_role": "theory", "summary": "Summary",
+            "claims": [{"claim": "T1 is necessary", "kind": "condition",
+                        "evidence": [{"block_id": 4, "quote": "T1 is necessary for the definition."}]}],
+            "argument_steps": ["Removing T1 breaks the definition."]}
+    first = v31._compact_notes_deterministic([note])
+    second = v31._compact_notes_deterministic([note])
+    assert first == second
+    assert '"block_id": 4' in first
+    assert '"T1 is necessary for the definition."' in first
