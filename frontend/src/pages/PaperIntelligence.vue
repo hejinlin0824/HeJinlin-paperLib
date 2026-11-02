@@ -188,7 +188,7 @@ onMounted(async () => {
         <h3>核心主张</h3><p>{{ payload.thesis || '尚未提取' }}</p>
         <h3>贡献树 / 结构候选</h3>
         <article v-for="node in (payload.contributions || [])" :key="node.id" class="result">
-          <div class="result-head"><strong>{{ node.title }}</strong><span>{{ node.importance }} · {{ node.knowledge_role }}</span></div>
+          <div class="result-head"><strong>{{ node.title }}</strong><span>{{ node.importance }} · {{ node.knowledge_role }} · {{ node.origin || "LLM/人工候选" }}</span></div>
           <p>{{ node.description }}</p>
           <a v-for="ev in (node.evidence || [])" :key="ev.block_id + ev.quote" :href="`/reader/${current.paper_id}?block=${ev.block_id}`">Block #{{ ev.block_id }}：{{ ev.quote }} · 定位原文 ↗</a>
         </article>
