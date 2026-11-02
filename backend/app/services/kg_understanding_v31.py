@@ -218,9 +218,13 @@ async def run_understanding(draft_id: str) -> None:
                 notes.append(note)
                 processed_chars += sum(len(x["text"]) for x in chunk["segments"])
             except Exception as exc:
+                error_message = str(exc).strip()[:240]
                 failed_chunks.append({"section": chunk["section"], "chunk_index": chunk["chunk_index"],
-                                      "error": type(exc).__name__})
-                warnings.append(f"章节“{chunk['section']}”分块 {chunk['chunk_index']+1} 分析失败：{type(exc).__name__}")
+                                      "error": type(exc).__name__, "message": error_message})
+                warnings.append(
+                    f"章节“{chunk['section']}”分块 {chunk['chunk_index']+1} 分析失败："
+                    f"{type(exc).__name__}: {error_message or '无额外错误信息'}"
+                )
             payload["chunk_progress"] = {"completed": index + 1, "total": len(chunks)}
             payload["coverage"] = {
                 "section_count": len(sections), "chunk_count": len(chunks),
