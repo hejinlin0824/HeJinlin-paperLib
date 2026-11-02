@@ -99,6 +99,11 @@ export const api = {
   kgV4Understand: (paperId) => request(`/api/knowledge-graph/v4/papers/${paperId}/understand`, { method: 'POST' }),
   kgV4Index: (paperId, include_embeddings = false) => request(`/api/knowledge-graph/v4/papers/${paperId}/index`, { method: 'POST', body: { include_embeddings } }),
   kgV4IndexStatus: (paperId) => request(`/api/knowledge-graph/v4/papers/${paperId}/index`),
+  kgV4GraphContext: (q, paperId, topK = 10) => {
+    const params = new URLSearchParams({ q, top_k: String(topK) })
+    if (paperId) params.set('paper_id', paperId)
+    return request('/api/knowledge-graph/v4/graph-context?' + params.toString())
+  },
   kgV4Search: (q, paperId, topK = 8) => {
     const params = new URLSearchParams({ q, top_k: String(topK) })
     if (paperId) params.set('paper_id', paperId)
