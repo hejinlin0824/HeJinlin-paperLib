@@ -43,7 +43,7 @@ local directory before starting PaperLib:
 
 ```powershell
 pip install -r backend/requirements-intelligence.txt
-$env:PAPERLIB_BGE_M3_PATH = "E:\\models\\bge-m3"
+$env:PAPERLIB_BGE_M3_PATH = "E:\\models\\bge-m3"\n$env:PAPERLIB_GLINER_PATH = "E:\\models\\gliner"  # optional
 ```
 
 If the model path or optional package is unavailable, lexical-only mode remains the
