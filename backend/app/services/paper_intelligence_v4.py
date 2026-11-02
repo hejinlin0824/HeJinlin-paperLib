@@ -295,7 +295,12 @@ def extract_structure_candidates(paper_id: str) -> dict[str, Any]:
                                    "matched_term": match.group(0), "excerpt": excerpt,
                                    "source": "rule", "score": 1.0})
     # Optional local GLiNER zero-shot entity proposals. It never downloads weights.
-    model = _load_gliner()
+    model_error = ""
+    try:
+        model = _load_gliner()
+    except Exception as exc:
+        model = None
+        model_error = f"{type(exc).__name__}: {str(exc)[:180]}"
     if model is not None:
         labels = ["definition", "assumption", "necessary condition", "sufficient condition",
                   "theorem", "proposition", "lemma", "corollary", "proof", "method",
@@ -320,7 +325,8 @@ def extract_structure_candidates(paper_id: str) -> dict[str, Any]:
         if key not in seen:
             seen.add(key)
             unique.append(item)
-    return {"paper_id": paper_id, "candidate_count": len(unique), "candidates": unique}
+    return {"paper_id": paper_id, "candidate_count": len(unique), "candidates": unique,
+            "warnings": [model_error] if model_error else []}
 
 
 def index_status(paper_id: str) -> dict[str, Any] | None:
