@@ -73,6 +73,9 @@ jobs:
       - name: Install frontend dependencies
         working-directory: frontend
         run: npm ci
+      - name: Run the one-command Windows regression script
+        shell: pwsh
+        run: ./scripts/test_v4.ps1 -InstallDependencies
       - name: Smoke test the Windows production launcher and server
         shell: pwsh
         run: |
