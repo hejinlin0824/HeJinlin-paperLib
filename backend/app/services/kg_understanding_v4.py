@@ -112,7 +112,7 @@ async def run_understanding(draft_id: str) -> None:
         total_chars = sum(len(x["text"]) for section in sections for x in section["blocks"])
         total_chunk_chars = sum(len(x["text"]) for chunk in chunks for x in chunk["segments"])
         notes: list[dict] = []
-        failed: list[dict] = []
+        failed: list[dict] = []\n        processed_chars = 0
         payload.update({"paper_title": title, "progress_stage": "chunk_analysis"})
         legacy._persist_progress(draft_id, model_name, payload, warnings)
         ready, reason = engine_ready(info)
@@ -140,12 +140,7 @@ async def run_understanding(draft_id: str) -> None:
                     "section_count": len(sections), "chunk_count": len(chunks),
                     "completed_chunks": len(notes), "failed_chunks": len(failed),
                     "total_blocks": len(block_map), "total_chars": total_chars,
-                    "processed_chars": sum(len(x["text"]) for c in chunks[:index+1] for x in c["segments"]
-                                           if not any(f["section"] == c["section"] and f["chunk_index"] == c["chunk_index"] for f in failed)),
-                    "chunked_chars": total_chunk_chars,
-                    "input_coverage": round(sum(len(x["text"]) for n in notes for claim in (n.get("claims") or [])
-                                                for ev in (claim.get("evidence") or []) if ev.get("quote")) / max(1, total_chunk_chars), 4),
-                    "complete": len(failed) == 0,
+                    "processed_chars": processed_chars,\n                    "chunked_chars": total_chunk_chars,\n                    "input_coverage": round(processed_chars / max(1, total_chunk_chars), 4),\n                    "complete": len(failed) == 0,
                 }
                 payload["failed_chunks"] = failed
                 legacy._persist_progress(draft_id, model_name, payload, warnings)
