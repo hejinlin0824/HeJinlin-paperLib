@@ -77,4 +77,7 @@ def search(q: str = Query(..., min_length=1), paper_id: str | None = Query(None)
 
 @router.get("/papers/{paper_id}/structure-candidates")
 def structure_candidates(paper_id: str):
-    return service.structure_candidates(paper_id)
+    try:
+        return service.structure_candidates(paper_id)
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc))
