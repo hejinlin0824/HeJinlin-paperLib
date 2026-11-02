@@ -90,7 +90,7 @@ async def run_understanding(draft_id: str) -> None:
     model_name = f"{info.get('provider') or 'unknown'}/{info.get('model') or 'unknown'}"
     warnings: list[str] = []
     payload: dict[str, Any] = {"version": VERSION, "section_map": [], "coverage": {},
-                               "pipeline": {"llm_calls": 0, "retrieval": "not_indexed"}}
+                               "pipeline": {"llm_operations": 0, "retrieval": "not_indexed"}}
     try:
         paper = row("SELECT id,title,title_zh FROM papers WHERE id=?", (draft["paper_id"],))
         if not paper:
@@ -121,7 +121,7 @@ async def run_understanding(draft_id: str) -> None:
         else:
             for index, chunk in enumerate(chunks):
                 try:
-                    result = legacy._json(await chat(info, [
+                    payload["pipeline"]["llm_operations"] += 1\n                    result = legacy._json(await chat(info, [
                         {"role": "system", "content": v31.CHUNK_SYSTEM},
                         {"role": "user", "content": v31._chunk_prompt(title, chunk)},
                     ], max_tokens=2200))
