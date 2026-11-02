@@ -195,3 +195,26 @@ def test_successful_v4_pipeline_reports_real_input_coverage(isolated_db, monkeyp
     assert coverage["completed_chunks"] == coverage["chunk_count"] == 1
     assert coverage["processed_chars"] == coverage["chunked_chars"]
     assert coverage["input_coverage"] == 1.0
+
+def test_graph_context_retrieves_only_approved_v4_nodes_and_hyperedges(isolated_db):
+    _paper_with_blocks()
+    draft = v4.create_draft("harness-paper")
+    app_db.ex("UPDATE kg_understanding_drafts SET status=? WHERE id=?", ("draft", draft["id"]))
+    payload = {
+        "version": "4.0",
+        "contributions": [
+            {"id": "harness", "title": "Agent harness", "description": "Runtime engineering layer"},
+            {"id": "loop", "title": "Agent loop", "description": "Adaptive execution loop"},
+            {"id": "tools", "title": "Tool interface", "description": "External environment tools"},
+        ],
+        "relations": [],
+        "theory_logic": [{"id": "joint", "relation_type": "JOINTLY_SUFFICIENT_FOR",
+                          "source_ids": ["loop", "tools"], "target_id": "harness",
+                          "statement": "Loop and tools jointly support the harness definition."}],
+    }
+    v4.update_review(draft["id"], payload, "approved")
+    result = intel.search_approved_graph("agent harness", "harness-paper")
+    assert result["results"]
+    group = result["results"][0]
+    assert any(node["id"] == "harness" for node in group["matched_nodes"])
+    assert any(edge["kind"] == "theory_hyperedge" for edge in group["graph_paths"])
