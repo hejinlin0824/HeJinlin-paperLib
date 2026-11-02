@@ -240,24 +240,17 @@ def search_blocks(query: str, paper_id: str | None = None, top_k: int = DEFAULT_
         if score:
             lexical.append((score, doc))
     lexical.sort(key=lambda x: x[0], reverse=True)
-    dense_rank: dict[int, int] = {}
-    query_vector = _dense_query(query) if dense else None
-    if query_vector:
-        scored = []
-        for doc in docs:
-            vector = loads(doc.get("embedding_json"), [])
-            score = _cosine(query_vector, vector) if vector else 0.0
-            if score:
-                scored.append((score, doc))
-        scored.sort(key=lambda x: x[0], reverse=True)
-        dense_rank = {int(doc["block_id"]): rank for rank, (_, doc) in enumerate(scored, 1)}
+    configured_model = os.environ.get("PAPERLIB_BGE_M3_PATH", "")
+    dense_docs = [doc for doc in docs
+                  if doc.get("embedding_json") and doc.get("embedding_model") == configured_model]
+    query_vector = _dense_query(query) if dense and dense_docs and configured_model else None
     fused: dict[int, dict[str, Any]] = {}
     for rank, (score, doc) in enumerate(lexical, 1):
         bid = int(doc["block_id"])
         fused[bid] = {"doc": doc, "lexical_score": score, "dense_score": 0.0, "rrf": 1 / (60 + rank)}
     for rank, (_, doc) in enumerate(sorted(
-        [( _cosine(query_vector, loads(d.get("embedding_json"), [])), d) for d in docs
-          if query_vector and d.get("embedding_json")], key=lambda x: x[0], reverse=True), 1):
+        [(_cosine(query_vector, loads(d.get("embedding_json"), [])), d) for d in dense_docs
+         if query_vector], key=lambda x: x[0], reverse=True), 1):
         bid = int(doc["block_id"])
         item = fused.setdefault(bid, {"doc": doc, "lexical_score": 0.0, "dense_score": 0.0, "rrf": 0.0})
         item["dense_score"] = _cosine(query_vector, loads(doc.get("embedding_json"), []))
