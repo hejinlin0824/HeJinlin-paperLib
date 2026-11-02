@@ -87,3 +87,19 @@ def test_logic_validator_rejects_non_verbatim_or_unknown_endpoints(isolated_db):
     warnings = v31._validate_logic(payload, {1: "Some actual source evidence is present."})
     assert payload["theory_logic"] == []
     assert warnings
+
+def test_new_draft_uses_v31_and_keeps_legacy_graph_isolated(isolated_db):
+    from app.util import now
+    app_db.ex(
+        "INSERT INTO papers(id,title,status,created_at,updated_at) VALUES(?,?,?,?,?)",
+        ("paper-v31", "A theory paper", "ready", now(), now()),
+    )
+    app_db.ex(
+        "INSERT INTO blocks(paper_id,order_idx,type,en) VALUES(?,?,?,?)",
+        ("paper-v31", 0, "text", "A sufficiently long source paragraph for the V3.1 draft API test."),
+    )
+    draft = v31.create_draft("paper-v31")
+    assert draft["version"] == "3.1"
+    assert v31.get_draft(draft["id"])["version"] == "3.1"
+    assert app_db.row("SELECT COUNT(*) n FROM kg_entities")["n"] == 0
+    assert app_db.row("SELECT COUNT(*) n FROM kg_relations")["n"] == 0
