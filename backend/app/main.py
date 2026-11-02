@@ -9,7 +9,8 @@ from fastapi.staticfiles import StaticFiles
 from starlette.responses import FileResponse
 
 from .config import FRONTEND_DIST, PAPERS_DIR
-from .db import init_db\nfrom .util import now
+from .db import init_db
+from .util import now
 from .routers import annotations, dict, kg, kg_understanding, log, papers, questions, settings
 
 app = FastAPI(title="论文图书馆", version="0.1.0")
