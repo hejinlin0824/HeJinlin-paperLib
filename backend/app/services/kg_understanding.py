@@ -6,12 +6,15 @@ reviewable understanding draft; it never writes kg_entities/kg_relations.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 
 from ..db import db, row, rows
 from ..util import dumps, loads, new_id, now
 from .translate import chat, engine_info, engine_ready
+
+logger = logging.getLogger(__name__)
 
 VERSION = "3.0"
 V3_RELATION_TYPES = {"CONSISTS_OF", "SUPPORTS", "PROVES", "DERIVES", "NECESSARY_FOR", "SUFFICIENT_FOR", "IMPLIES"}
@@ -232,14 +235,50 @@ async def run_understanding(draft_id: str) -> None:
             section_notes.append({"title":sec["title"],**result})
         # Full-text synthesis uses the section-level map plus bounded original excerpts,
         # so the model sees cross-section structure without silently truncating one chapter.
+        # Allocate the synthesis excerpt budget across every section. The previous
+        # global [:MAX_INPUT_CHARS] slice silently dropped later sections (often theory/results).
         excerpt_parts = []
+        per_section_budget = max(1, MAX_INPUT_CHARS // max(1, len(sections)))
+        truncated_sections = []
         for sec in sections:
-            for b in sec["blocks"]:
-                excerpt_parts.append(f"<block id={b['id']}>[{sec['title']}] {b['text']}</block>")
-        full_source = "\n".join(excerpt_parts)
-        source = full_source[:MAX_INPUT_CHARS]
-        if len(full_source) > MAX_INPUT_CHARS:
-            warnings.append(f"全文综合上下文超过 {MAX_INPUT_CHARS} 字符预算，尾部正文未进入综合输入；结果需人工重点核对")
+            entries = sec["blocks"]
+            rendered = [
+                f"<block id={b['id']}>[{sec['title']}] {b['text']}</block>"
+                for b in entries
+            ]
+            full_section = "\n".join(rendered)
+            budget = max(1, per_section_budget - 80)
+            if len(full_section) <= budget:
+                excerpt_parts.append(full_section)
+                continue
+            truncated_sections.append(sec["title"])
+            # Keep both the beginning and the end of each over-budget section.
+            # This is important for papers that state conditions/conclusions late.
+            head_budget = max(1, int(budget * 0.55))
+            tail_budget = max(1, budget - head_budget)
+            head_parts, remaining = [], head_budget
+            for item in rendered:
+                if remaining <= 0:
+                    break
+                piece = item[:remaining]
+                if piece:
+                    head_parts.append(piece)
+                    remaining -= len(piece)
+            tail_parts, remaining = [], tail_budget
+            for item in reversed(rendered):
+                if remaining <= 0:
+                    break
+                piece = item[-remaining:]
+                if piece:
+                    tail_parts.insert(0, piece)
+                    remaining -= len(piece)
+            excerpt_parts.append("\n".join(head_parts + tail_parts))
+        source = "\n".join(excerpt_parts)
+        if truncated_sections:
+            warnings.append(
+                "全文综合输入预算不足，已按章节均衡保留各章开头与结尾；"
+                "以下章节仍有正文未进入综合输入：" + "、".join(truncated_sections)
+            )
         synthesis_prompt = (
             f"论文标题：{title}\n章节角色与摘要：{json.dumps(section_notes,ensure_ascii=False)}\n"
             f"可核验原文块（可能因长度上限未覆盖全文；不可引用未提供内容）：\n{source}\n"
@@ -288,9 +327,11 @@ async def run_understanding(draft_id: str) -> None:
             c.execute("UPDATE kg_understanding_drafts SET status='draft',model_name=?,payload_json=?,warnings_json=?,updated_at=? WHERE id=?",
                       (f"{info['provider']}/{info['model']}",dumps(payload),dumps(warnings),now(),draft_id))
     except Exception as exc:
+        logger.exception("V3 paper understanding failed: draft_id=%s paper_id=%s", draft_id, pid)
+        diagnostic = f"V3理解流程失败（{type(exc).__name__}）：{str(exc)[:300]}"
         with db() as c:
             c.execute("UPDATE kg_understanding_drafts SET status='failed',warnings_json=?,updated_at=? WHERE id=?",
-                      (dumps(warnings+[str(exc)[:300]]),now(),draft_id))
+                      (dumps(warnings+[diagnostic]),now(),draft_id))
 
 def nodes_by_id(payload: dict) -> dict:
     return {str(n.get("id")):n for n in payload.get("contributions",[]) if n.get("id")}
