@@ -225,13 +225,13 @@ def test_graph_context_retrieves_only_approved_v4_nodes_and_hyperedges(isolated_
     assert any(edge["kind"] == "theory_hyperedge" for edge in group["graph_paths"])
 
 
-def test_chunk_batching_reduces_calls_without_crossing_section_boundaries():
+def test_chunk_batching_reduces_calls_and_preserves_per_chunk_sections():
     chunks = [
         {"section": "Method", "section_index": 0, "chunk_index": 0,
          "segments": [{"block_id": 1, "text": "First short chunk."}]},
-        {"section": "Method", "section_index": 0, "chunk_index": 1,
-         "segments": [{"block_id": 2, "text": "Second short chunk."}]},
         {"section": "Experiments", "section_index": 1, "chunk_index": 0,
+         "segments": [{"block_id": 2, "text": "Second short chunk."}]},
+        {"section": "Discussion", "section_index": 2, "chunk_index": 0,
          "segments": [{"block_id": 3, "text": "A different section."}]},
     ]
     batches = v4._build_chunk_batches(chunks)
@@ -245,7 +245,8 @@ def test_chunk_batching_reduces_calls_without_crossing_section_boundaries():
     notes = v4._normalise_batch_notes(response, [0, 1], chunks)
     assert set(notes) == {0, 1}
     assert notes[0]["chunk_index"] == 0 and notes[1]["chunk_index"] == 1
-    assert notes[0]["title"] == notes[1]["title"] == "Method"
+    assert notes[0]["title"] == "Method"
+    assert notes[1]["title"] == "Experiments"
 
 
 def test_batch_parser_rejects_unknown_duplicate_and_empty_chunks():
