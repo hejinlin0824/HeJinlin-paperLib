@@ -103,3 +103,30 @@ A dedicated vector database can be introduced later if measured corpus size requ
 - RRF combines lexical and dense rankings; weights should be tuned against a labeled set,
   not guessed from a single paper.
 - The Harness fixture is a target specification, not a substitute for checking the source PDF.
+
+
+## V4.1 engineering follow-up: bounded synthesis and shared primitives
+
+- V3.1 and V4 now import section loading, chunk splitting, prompt construction, chunk/system prompts, and theory-logic evidence validation from `backend/app/services/paper_understanding_common.py`. V4 no longer imports or calls the V3.1 orchestration module; V3.1 keeps its existing pipeline and public helper names through imports, preserving historical behavior.
+- Synthesis input is compacted locally with a 48,000-character budget by default. Low-priority open questions, candidate lists, and argument steps are removed before claim/evidence detail or summaries are shortened. Each successfully analyzed chunk retains a compact record and its section/chunk identity. The resulting input/output character counts, chunk counts, truncation flag, and retained evidence count are saved under `payload.pipeline.synthesis_input`.
+- This is a character budget, not an exact tokenizer token budget. Different providers tokenize Chinese/English and JSON differently; the metrics are exposed so a provider-specific token budget can be added if needed.
+
+### One-command Windows regression test
+
+From the repository root, run:
+
+```powershell
+.\scripts\test_v4.ps1
+```
+
+The script runs backend pytest, frontend graph tests, and a Vite production build. It uses the repository's autouse pytest fixture, which redirects each test to a disposable SQLite database; it does not run a real model or modify the formal library database. If frontend dependencies are absent, it runs `npm ci` automatically.
+
+Optional switches:
+
+```powershell
+.\scripts\test_v4.ps1 -InstallDependencies
+.\scripts\test_v4.ps1 -LauncherPreflight
+.\scripts\test_v4.ps1 -SkipFrontend
+```
+
+Logs and a JSON summary are written to a timestamped directory under `$env:TEMP\paperlib-v4-test-*`. Real-provider performance/quality testing remains a separate, explicitly initiated test because it incurs API usage and depends on the user's configured model.
