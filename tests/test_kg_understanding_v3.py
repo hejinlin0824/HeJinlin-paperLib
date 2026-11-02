@@ -89,7 +89,7 @@ def test_v3_contribution_tree_rejects_duplicate_ids_and_breaks_cycles(isolated_d
 
 
 def test_v3_json_parser_handles_braces_inside_strings_and_fenced_output():
-    raw = 'Result:\\n```json\\n{"claim":"A brace } is literal","nested":{"ok":true}}\\n```'
+    raw = "Result:\n```json\n{\"claim\":\"A brace } is literal\",\"nested\":{\"ok\":true}}\n```"
     assert v3._json(raw) == {"claim": "A brace } is literal", "nested": {"ok": True}}
 
 
