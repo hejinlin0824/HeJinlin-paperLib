@@ -79,7 +79,7 @@ try {
 
     if ($Tier -in @("full-sim", "real") -and -not $SkipFrontend) {
         $frontend = Join-Path $root "frontend"
-        if ($InstallDependencies -or -not (Test-Path (Join-Path $frontend "node_modules"))) {
+        if (-not (Test-Path (Join-Path $frontend "node_modules"))) {
             Invoke-TestStep "Install frontend dependencies" {
                 Push-Location $frontend
                 try { npm ci } finally { Pop-Location }
@@ -204,7 +204,12 @@ finally {
     $summary = [ordered]@{
         project = "HeJinlin-paperLib"
         tier = $Tier
-        test_scope = if ($RunLiveModel) { "offline regression, frontend build, and explicitly requested live model analysis" } else { "offline regression and frontend build; no real model API calls" }
+        test_scope = switch ($Tier) {
+            "unit" { "synthetic document/schema/evaluation unit contracts; no model/network calls" }
+            "integration" { "all backend tests with disposable SQLite databases; no real paper/model calls" }
+            "full-sim" { "backend regression plus frontend tests and production build; no real paper/model calls" }
+            "real" { "full simulation plus explicitly requested live model analysis for the selected paper" }
+        }
         started_at = $started.ToString("o")
         finished_at = $finished.ToString("o")
         duration_seconds = [math]::Round(($finished - $started).TotalSeconds, 2)

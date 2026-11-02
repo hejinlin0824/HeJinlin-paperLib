@@ -187,3 +187,18 @@ python tools/evaluate_ragas_fixture.py --adapters-module your_local_ragas_adapte
 
 The adapter module must expose `build_llm()` and `build_embeddings()`. Without both,
 the command reports `configuration_required` and makes no model or embedding requests.
+
+
+PowerShell test-tier commands:
+
+```powershell
+.\scripts\test_v4.ps1 -Tier unit
+.\scripts\test_v4.ps1 -Tier integration
+.\scripts\test_v4.ps1 -Tier full-sim
+# 只有前三层通过后，才显式指定真实论文
+.\scripts\test_v4.ps1 -Tier real -RunLiveModel -PaperId "<论文ID>"
+```
+
+`unit` runs only the synthetic MinerU/schema/Ragas fixture contracts. `integration` runs
+all backend tests with disposable SQLite databases. `full-sim` adds frontend tests and build.
+The real tier is intentionally gated and cannot be selected accidentally by the normal command.
