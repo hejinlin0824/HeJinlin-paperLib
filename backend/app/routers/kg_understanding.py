@@ -1,6 +1,6 @@
 """Human-review API for isolated V3 paper-understanding drafts."""
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Body, Query
-from ..services import kg_understanding as service
+from ..services import kg_understanding_v31 as service
 
 router = APIRouter(prefix="/api/knowledge-graph/v3", tags=["knowledge-graph-v3"])
 
