@@ -261,3 +261,31 @@ def test_batch_parser_rejects_unknown_duplicate_and_empty_chunks():
     notes = v4._normalise_batch_notes(response, [0], chunks)
     assert list(notes) == [0]
     assert notes[0]["summary"] == "Valid"
+
+
+def test_v4_synthesis_compaction_is_bounded_and_keeps_every_chunk():
+    notes = [{
+        "title": f"Section {i // 3}", "section_index": i // 3, "chunk_index": i % 3,
+        "section_role": "method", "summary": (f"Summary for chunk {i}. " + "detail " * 90),
+        "claims": [{"claim": f"Claim {i}", "kind": "condition",
+                   "evidence": [{"block_id": i + 1, "quote": f"Exact evidence quote for block {i + 1}."}]}],
+        "argument_steps": ["Reasoning step " * 20],
+        "candidate_contributions": ["Candidate " * 20], "open_questions": ["Question " * 20],
+    } for i in range(24)]
+    compact, stats = v4._compact_notes(notes, max_chars=6000)
+    decoded = json.loads(compact)
+    assert len(decoded) == len(notes)
+    assert len(compact) <= 6000
+    assert stats["chunks_included"] == stats["chunks_total"] == 24
+    assert stats["truncated"] is True
+    assert all(item["section_index"] == i // 3 for i, item in enumerate(decoded))
+
+
+def test_v4_uses_shared_primitives_without_importing_v31_runtime():
+    from app.services import paper_understanding_common as common
+    assert v4._load_sections is common._load_sections
+    assert v4._make_chunks is common._make_chunks
+    assert v4._chunk_prompt is common._chunk_prompt
+    assert v31._load_sections is common._load_sections
+    assert v31._make_chunks is common._make_chunks
+    assert "kg_understanding_v31" not in v4.__dict__
