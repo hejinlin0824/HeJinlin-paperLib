@@ -121,11 +121,11 @@ async def run_understanding(draft_id: str) -> None:
         else:
             for index, chunk in enumerate(chunks):
                 try:
-                    payload["pipeline"]["llm_operations"] += 1\n                    result = legacy._json(await chat(info, [
+                    payload["pipeline"]["llm_operations"] += 1
+                    result = legacy._json(await chat(info, [
                         {"role": "system", "content": v31.CHUNK_SYSTEM},
                         {"role": "user", "content": v31._chunk_prompt(title, chunk)},
                     ], max_tokens=2200))
-                    payload["pipeline"]["llm_operations"] += 1
                     if not result:
                         raise RuntimeError("模型未返回合法 JSON")
                     notes.append({"title": chunk["section"], "chunk_index": chunk["chunk_index"],
@@ -140,7 +140,10 @@ async def run_understanding(draft_id: str) -> None:
                     "section_count": len(sections), "chunk_count": len(chunks),
                     "completed_chunks": len(notes), "failed_chunks": len(failed),
                     "total_blocks": len(block_map), "total_chars": total_chars,
-                    "processed_chars": processed_chars,\n                    "chunked_chars": total_chunk_chars,\n                    "input_coverage": round(processed_chars / max(1, total_chunk_chars), 4),\n                    "complete": len(failed) == 0,
+                    "processed_chars": processed_chars,
+                    "chunked_chars": total_chunk_chars,
+                    "input_coverage": round(processed_chars / max(1, total_chunk_chars), 4),
+                    "complete": len(failed) == 0,
                 }
                 payload["failed_chunks"] = failed
                 legacy._persist_progress(draft_id, model_name, payload, warnings)
