@@ -125,7 +125,7 @@ async def run_understanding(draft_id: str) -> None:
                         {"role": "system", "content": v31.CHUNK_SYSTEM},
                         {"role": "user", "content": v31._chunk_prompt(title, chunk)},
                     ], max_tokens=2200))
-                    payload["pipeline"]["llm_calls"] += 1
+                    payload["pipeline"]["llm_operations"] += 1
                     if not result:
                         raise RuntimeError("模型未返回合法 JSON")
                     notes.append({"title": chunk["section"], "chunk_index": chunk["chunk_index"],
@@ -193,7 +193,7 @@ async def run_understanding(draft_id: str) -> None:
         # Keep V4 metadata and source coverage when falling back.
         payload["version"] = VERSION
         payload["paper_title"] = title
-        payload["pipeline"] = payload.get("pipeline") or {"retrieval": "lexical", "llm_calls": 0}
+        payload["pipeline"] = payload.get("pipeline") or {"retrieval": "lexical", "llm_operations": 0}
         payload["section_map"] = payload.get("section_map") or section_map
         payload["coverage"] = payload.get("coverage") or {
             "section_count": len(sections), "chunk_count": len(chunks), "completed_chunks": len(notes),
@@ -214,7 +214,37 @@ async def run_understanding(draft_id: str) -> None:
             payload["paper_type"] = "other"
         warnings.extend(legacy._normalise_relations(payload, block_map))
         warnings.extend(v31._validate_logic(payload, block_map))
-        # Do not spend one request per edge. Keep candidates explicitly unverified for human review.
+        # Verify all candidate edges in one bounded request, not one request per edge.
+        node_map = legacy.nodes_by_id(payload)
+        edges = []
+        for relation in payload.get("relations", [])[:12]:
+            edges.append({"id": relation.get("id") or f"rel_{len(edges)+1}",
+                          "relation_type": relation.get("relation_type"),
+                          "source": node_map.get(relation.get("source_id")),
+                          "target": node_map.get(relation.get("target_id")),
+                          "evidence": relation.get("evidence")})
+        for logic in payload.get("theory_logic", [])[:12]:
+            edges.append({"id": logic.get("id") or f"logic_{len(edges)+1}",
+                          "relation_type": logic.get("relation_type"),
+                          "sources": [node_map.get(x) for x in logic.get("source_ids", [])],
+                          "target": node_map.get(logic.get("target_id")),
+                          "evidence": logic.get("evidence")})
+        if ready and edges:
+            try:
+                payload["pipeline"]["llm_operations"] += 1
+                verdicts = legacy._json(await chat(info, [
+                    {"role": "system", "content": "你是学术关系语义核验器。逐条判断证据是否蕴含关系。联合充分关系必须把所有前提作为整体检查。不得依赖常识补足证据。只输出 JSON，格式为 verifications 数组，每项包含 id、verdict（entailed/not_entailed/uncertain）、reason。"},
+                    {"role": "user", "content": json.dumps({"edges": edges}, ensure_ascii=False)},
+                ], max_tokens=2200))
+                by_id = {str(x.get("id")): x for x in (verdicts or {}).get("verifications", []) if isinstance(x, dict)}
+                for collection in (payload.get("relations", []), payload.get("theory_logic", [])):
+                    for edge in collection:
+                        verdict = by_id.get(str(edge.get("id") or ""))
+                        if verdict and verdict.get("verdict") in {"entailed", "not_entailed", "uncertain"}:
+                            edge["verification"] = verdict["verdict"]
+                            edge["reason"] = str(verdict.get("reason") or "")[:500]
+            except Exception as exc:
+                warnings.append(f"批量关系核验失败，保留未核验候选：{type(exc).__name__}")
         for relation in payload.get("relations", []):
             relation.setdefault("verification", "unverified")
         for relation in payload.get("theory_logic", []):
