@@ -149,7 +149,7 @@ async def run_understanding(draft_id: str) -> None:
                         ], max_tokens=2200)
                         result = legacy._json(raw_response)
                         if not result:
-                            preview = re.sub(r"\\s+", " ", str(raw_response or "")).strip()[:180]
+                            preview = " ".join(str(raw_response or "").split())[:180]
                             raise RuntimeError(
                                 "模型未返回合法 JSON；"
                                 f"response_chars={len(str(raw_response or ''))}; "
