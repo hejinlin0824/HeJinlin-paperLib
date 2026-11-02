@@ -215,7 +215,8 @@ async def run_understanding(draft_id: str) -> None:
         # Verify all candidate edges in one bounded request, not one request per edge.
         node_map = legacy.nodes_by_id(payload)
         edges = []
-        for relation in payload.get("relations", [])[:12]:
+        for index, relation in enumerate(payload.get("relations", [])[:12], 1):
+            relation["id"] = str(relation.get("id") or f"rel_{index}")
             edges.append({"id": relation.get("id") or f"rel_{len(edges)+1}",
                           "relation_type": relation.get("relation_type"),
                           "source": node_map.get(relation.get("source_id")),
