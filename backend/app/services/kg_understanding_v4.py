@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Any
 
 from ..db import db, row
@@ -157,8 +158,9 @@ async def run_understanding(draft_id: str) -> None:
     info = engine_info()
     model_name = f"{info.get('provider') or 'unknown'}/{info.get('model') or 'unknown'}"
     warnings: list[str] = []
+    run_started = time.perf_counter()
     payload: dict[str, Any] = {"version": VERSION, "section_map": [], "coverage": {},
-                               "pipeline": {"llm_operations": 0, "retrieval": "not_indexed"}}
+                               "pipeline": {"llm_operations": 0, "retrieval": "not_indexed", "timings_seconds": {}}}
     try:
         paper = row("SELECT id,title,title_zh FROM papers WHERE id=?", (draft["paper_id"],))
         if not paper:
@@ -244,6 +246,7 @@ async def run_understanding(draft_id: str) -> None:
                                            "error_type": type(exc).__name__, "message": str(exc)[:240]})
                     return batch_notes
 
+            chunk_stage_started = time.perf_counter()
             tasks = [asyncio.create_task(analyze_batch(batch_number, indexes))
                      for batch_number, indexes in enumerate(batches)]
             for future in asyncio.as_completed(tasks):
@@ -266,6 +269,7 @@ async def run_understanding(draft_id: str) -> None:
                 }
                 payload["failed_chunks"] = failed
                 legacy._persist_progress(draft_id, model_name, payload, warnings)
+            payload["pipeline"]["timings_seconds"]["chunk_analysis"] = round(time.perf_counter() - chunk_stage_started, 3)
         # Build section summaries from available chunk notes, including partial chapters.
         section_map = []
         for si, section in enumerate(sections):
@@ -284,6 +288,7 @@ async def run_understanding(draft_id: str) -> None:
         if ready and notes:
             # No LLM summary-compression stage. Deterministically compact complete note objects.
             compact_notes = _compact_notes(notes)
+            synthesis_started = time.perf_counter()
             try:
                 payload["pipeline"]["llm_operations"] += 1
                 result = legacy._json(await _chat_v4(info, [
@@ -302,7 +307,9 @@ async def run_understanding(draft_id: str) -> None:
                 result["coverage"] = payload.get("coverage", {})
                 result["pipeline"] = payload["pipeline"]
                 payload = result
+                payload["pipeline"].setdefault("timings_seconds", {})["synthesis"] = round(time.perf_counter() - synthesis_started, 3)
             except Exception as exc:
+                payload["pipeline"].setdefault("timings_seconds", {})["synthesis"] = round(time.perf_counter() - synthesis_started, 3)
                 warnings.append(f"全文综合失败，降级为规则候选与章节摘要：{type(exc).__name__}: {str(exc)[:200]}")
                 payload.update(_fallback_payload(title, section_map, candidates))
         else:
@@ -349,6 +356,7 @@ async def run_understanding(draft_id: str) -> None:
                           "target": node_map.get(logic.get("target_id")),
                           "evidence": logic.get("evidence")})
         if ready and edges:
+            verification_started = time.perf_counter()
             try:
                 payload["pipeline"]["llm_operations"] += 1
                 verdicts = legacy._json(await _chat_v4(info, [
@@ -364,6 +372,8 @@ async def run_understanding(draft_id: str) -> None:
                             edge["reason"] = str(verdict.get("reason") or "")[:500]
             except Exception as exc:
                 warnings.append(f"批量关系核验失败，保留未核验候选：{type(exc).__name__}")
+            finally:
+                payload["pipeline"].setdefault("timings_seconds", {})["verification"] = round(time.perf_counter() - verification_started, 3)
         for relation in payload.get("relations", []):
             relation.setdefault("verification", "unverified")
         for relation in payload.get("theory_logic", []):
@@ -371,6 +381,7 @@ async def run_understanding(draft_id: str) -> None:
         payload.pop("progress_stage", None)
         if failed:
             warnings.append("部分分块未完成；其余结果已保留，档案为不完整草稿。")
+        payload["pipeline"].setdefault("timings_seconds", {})["total"] = round(time.perf_counter() - run_started, 3)
         legacy._persist_progress(draft_id, model_name, payload, warnings, "draft")
     except Exception as exc:
         logger.exception("V4 paper understanding failed: draft=%s paper=%s", draft_id, draft.get("paper_id"))
