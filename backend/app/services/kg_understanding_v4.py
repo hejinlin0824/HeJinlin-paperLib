@@ -1,6 +1,7 @@
 """V4 orchestration: local-first indexing, bounded LLM reasoning, recoverable drafts."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -56,6 +57,11 @@ def _fallback_payload(title: str, section_map: list[dict], candidates: list[dict
         "limitations": [], "uncertainties": ["LLM 综合阶段未完成；当前内容仅为规则识别候选，需人工审阅。"],
         "relations": [], "theory_logic": [], "argument_map": [], "section_map": section_map,
     }
+
+
+async def _chat_v4(info: dict, messages: list, max_tokens: int):
+    """V4 uses bounded waits/retries; legacy translation keeps its original defaults."""
+    return await chat(info, messages, max_tokens=max_tokens, timeout_seconds=90, retries=2)
 
 
 def _compact_notes(notes: list[dict]) -> str:
@@ -124,23 +130,41 @@ async def run_understanding(draft_id: str) -> None:
         if not ready:
             warnings.append(f"模型未就绪：{reason}；保留本地规则候选与章节结构。")
         else:
-            for index, chunk in enumerate(chunks):
-                try:
-                    payload["pipeline"]["llm_operations"] += 1
-                    result = legacy._json(await chat(info, [
-                        {"role": "system", "content": v31.CHUNK_SYSTEM},
-                        {"role": "user", "content": v31._chunk_prompt(title, chunk)},
-                    ], max_tokens=2200))
-                    if not result:
-                        raise RuntimeError("模型未返回合法 JSON")
-                    notes.append({"title": chunk["section"], "chunk_index": chunk["chunk_index"],
-                                  "section_index": chunk["section_index"], **result})
-                except Exception as exc:
-                    failed.append({"section": chunk["section"], "chunk_index": chunk["chunk_index"],
-                                   "error_type": type(exc).__name__, "message": str(exc)[:240]})
-                    warnings.append(f"章节“{chunk['section']}”分块 {chunk['chunk_index']+1} 失败：{type(exc).__name__}")
+            max_concurrency = max(1, min(3, int(info.get("concurrency") or 2)))
+            semaphore = asyncio.Semaphore(max_concurrency)
+            payload["pipeline"]["llm_operations"] += len(chunks)
+
+            async def analyze_chunk(index: int, chunk: dict):
+                async with semaphore:
+                    try:
+                        result = legacy._json(await _chat_v4(info, [
+                            {"role": "system", "content": v31.CHUNK_SYSTEM},
+                            {"role": "user", "content": v31._chunk_prompt(title, chunk)},
+                        ], max_tokens=2200))
+                        if not result:
+                            raise RuntimeError("模型未返回合法 JSON")
+                        note = {"title": chunk["section"], "chunk_index": chunk["chunk_index"],
+                                "section_index": chunk["section_index"], **result}
+                        return index, note, None
+                    except Exception as exc:
+                        error = {"section": chunk["section"], "chunk_index": chunk["chunk_index"],
+                                 "error_type": type(exc).__name__, "message": str(exc)[:240]}
+                        return index, None, error
+
+            tasks = [asyncio.create_task(analyze_chunk(index, chunk))
+                     for index, chunk in enumerate(chunks)]
+            for finished, future in enumerate(asyncio.as_completed(tasks), 1):
+                index, note, error = await future
+                if note is not None:
+                    notes.append(note)
+                    processed_chars += sum(len(segment["text"]) for segment in chunks[index]["segments"])
+                if error is not None:
+                    failed.append(error)
+                    warnings.append(f"章节“{error['section']}”分块 {error['chunk_index']+1} 失败：{error['error_type']}")
+                notes.sort(key=lambda item: (item.get("section_index", 0), item.get("chunk_index", 0)))
+                failed.sort(key=lambda item: (item["section"], item["chunk_index"]))
                 payload["chunk_notes"] = notes
-                payload["chunk_progress"] = {"completed": index + 1, "total": len(chunks)}
+                payload["chunk_progress"] = {"completed": finished, "total": len(chunks)}
                 payload["coverage"] = {
                     "section_count": len(sections), "chunk_count": len(chunks),
                     "completed_chunks": len(notes), "failed_chunks": len(failed),
@@ -172,7 +196,7 @@ async def run_understanding(draft_id: str) -> None:
             compact_notes = _compact_notes(notes)
             try:
                 payload["pipeline"]["llm_operations"] += 1
-                result = legacy._json(await chat(info, [
+                result = legacy._json(await _chat_v4(info, [
                     {"role": "system", "content": v31.SYNTHESIS_SYSTEM},
                     {"role": "user", "content": f"论文标题：{title}\n章节分块分析（证据均带 block_id）：\n{compact_notes}"},
                 ], max_tokens=7500))
