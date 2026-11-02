@@ -12,6 +12,7 @@ const payload = ref(null)
 const jsonText = ref('')
 const query = ref('')
 const searchResults = ref([])
+const graphResults = ref([])
 const candidates = ref([])
 const indexInfo = ref(null)
 const busy = ref(false)
@@ -47,8 +48,12 @@ async function search() {
   if (!query.value.trim()) return
   busy.value = true
   try {
-    const result = await api.kgV4Search(query.value, paperId.value || undefined, 10)
+    const [result, graph] = await Promise.all([
+      api.kgV4Search(query.value, paperId.value || undefined, 10),
+      api.kgV4GraphContext(query.value, paperId.value || undefined, 10)
+    ])
     searchResults.value = result.results || []
+    graphResults.value = graph.results || []
     indexInfo.value = { ...(indexInfo.value || {}), mode: result.mode }
   } catch (e) { toast(e.message || '检索失败') }
   finally { busy.value = false }
@@ -154,6 +159,23 @@ onMounted(async () => {
       <p v-if="!searchResults.length" class="muted">暂无检索结果。先选择论文并建立索引。</p>
     </section>
 
+    <section class="panel">
+      <h2>已审核知识图谱上下文 <span class="count">{{ graphResults.length }}</span></h2>
+      <p class="hint">仅检索人工确认的 V4 档案；不会把 V3 历史图谱或未审核候选混入 GraphRAG 上下文。</p>
+      <article v-for="group in graphResults" :key="group.draft_id" class="result">
+        <div class="result-head"><strong>{{ paperTitle(group.paper_id) }}</strong><span>Draft {{ group.draft_id }}</span></div>
+        <div v-for="node in group.matched_nodes" :key="node.id" class="graph-node">
+          <strong>{{ node.title }}</strong><small>相关度 {{ node.score }} · {{ node.importance }} · {{ node.knowledge_role }}</small>
+          <p>{{ node.description }}</p>
+        </div>
+        <div v-for="(edge, i) in group.graph_paths" :key="i" class="graph-edge">
+          {{ edge.kind }}：{{ edge.relation_type }} · {{ edge.statement || edge.reason || '' }}
+        </div>
+        <div v-for="node in group.context_nodes" :key="'context-' + node.id" class="context-node">{{ node.title }}</div>
+      </article>
+      <p v-if="!graphResults.length" class="muted">没有匹配的已审核 V4 图谱节点。先审核并确认 V4 理解档案后，这里才会出现图谱上下文。</p>
+    </section>
+
     <section v-if="candidates.length" class="panel">
       <h2>规则识别候选 <span class="count">{{ candidates.length }}</span></h2>
       <p class="hint">这些是基于学术表达模式发现的候选，不代表模型或人工已经确认其理论地位。</p>
@@ -224,5 +246,5 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.intelligence-page{max-width:1500px;margin:auto;padding:28px 32px 60px;color:#263445}.hero{display:flex;justify-content:space-between;gap:20px;margin-bottom:22px}.hero h1{font-size:28px;margin:8px 0}.hero p,.hint,.muted{color:#718096}.eyebrow{font-size:11px;letter-spacing:.12em;color:#718096;font-weight:700}.hero nav{display:flex;gap:18px}.hero a,.result a{color:#456b91;text-decoration:none}.panel{background:#fff;border:1px solid #e3e9ef;border-radius:12px;padding:18px;margin-bottom:16px}.panel h2{font-size:18px;margin:0 0 14px}.panel h3{font-size:15px;margin:18px 0 8px}.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.toolbar select,.toolbar input{border:1px solid #d6dee7;border-radius:7px;padding:10px;min-width:240px;flex:1;font:inherit}.toolbar button{border:0;border-radius:7px;padding:10px 14px;background:#315f87;color:white;cursor:pointer}.toolbar button:disabled{opacity:.5}.toolbar .secondary{background:#edf2f7;color:#40566d}.toolbar .danger{background:#9a3e3e}.check{font-size:12px;color:#667789}.status-line{margin-top:12px;color:#456b91;font-size:13px}.result{border:1px solid #e7edf2;border-radius:8px;padding:12px;margin:9px 0}.result p{font-size:13px;line-height:1.65;color:#526174;white-space:pre-wrap}.result small,.result-head span{color:#718096;font-size:11px}.result-head{display:flex;justify-content:space-between;align-items:center;gap:12px}.result>a{display:block;font-size:12px;margin-top:6px}.workspace{display:grid;grid-template-columns:290px minmax(0,1fr);gap:16px;align-items:start}.draft{display:block;width:100%;text-align:left;border:1px solid #e5ebf0;background:#f8fafc;border-radius:8px;padding:10px;margin:8px 0;color:#34465a}.draft.active{border-color:#7898b6;background:#edf4fa}.draft strong,.draft span{display:block}.draft span{font-size:11px;color:#718096;margin-top:5px}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin:16px 0}.metrics div{background:#f7f9fb;border:1px solid #e7edf2;border-radius:8px;padding:12px}.metrics strong,.metrics small{display:block}.metrics strong{font-size:20px}.metrics small{font-size:11px;color:#718096}.detail{min-width:0}.empty{min-height:200px}.editor{margin-top:16px}.editor summary{cursor:pointer;font-weight:600}.editor textarea{display:block;width:100%;min-height:240px;margin:10px 0;border:1px solid #d6dee7;border-radius:8px;padding:10px;font:12px/1.5 ui-monospace,monospace}.editor button{border:0;border-radius:7px;padding:9px 14px;background:#315f87;color:white;cursor:pointer}.warnings{background:#fff9f0;border:1px solid #f0dfc7;border-radius:8px;padding:12px;margin-top:18px}.count{background:#edf2f7;border-radius:12px;padding:2px 8px;font-size:12px}@media(max-width:900px){.workspace{grid-template-columns:1fr}.hero{display:block}.metrics{grid-template-columns:repeat(2,1fr)}}
+.intelligence-page{max-width:1500px;margin:auto;padding:28px 32px 60px;color:#263445}.hero{display:flex;justify-content:space-between;gap:20px;margin-bottom:22px}.hero h1{font-size:28px;margin:8px 0}.hero p,.hint,.muted{color:#718096}.eyebrow{font-size:11px;letter-spacing:.12em;color:#718096;font-weight:700}.hero nav{display:flex;gap:18px}.hero a,.result a{color:#456b91;text-decoration:none}.panel{background:#fff;border:1px solid #e3e9ef;border-radius:12px;padding:18px;margin-bottom:16px}.panel h2{font-size:18px;margin:0 0 14px}.panel h3{font-size:15px;margin:18px 0 8px}.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.toolbar select,.toolbar input{border:1px solid #d6dee7;border-radius:7px;padding:10px;min-width:240px;flex:1;font:inherit}.toolbar button{border:0;border-radius:7px;padding:10px 14px;background:#315f87;color:white;cursor:pointer}.toolbar button:disabled{opacity:.5}.toolbar .secondary{background:#edf2f7;color:#40566d}.toolbar .danger{background:#9a3e3e}.check{font-size:12px;color:#667789}.status-line{margin-top:12px;color:#456b91;font-size:13px}.result{border:1px solid #e7edf2;border-radius:8px;padding:12px;margin:9px 0}.result p{font-size:13px;line-height:1.65;color:#526174;white-space:pre-wrap}.result small,.result-head span{color:#718096;font-size:11px}.graph-node{margin:8px 0;padding:9px;background:#f7f9fb;border-radius:7px}.graph-node small{display:block;color:#718096;font-size:11px;margin-top:4px}.graph-edge,.context-node{font-size:12px;color:#526174;padding:5px 8px;border-left:2px solid #b5c7d8;margin:5px 0}.result-head{display:flex;justify-content:space-between;align-items:center;gap:12px}.result>a{display:block;font-size:12px;margin-top:6px}.workspace{display:grid;grid-template-columns:290px minmax(0,1fr);gap:16px;align-items:start}.draft{display:block;width:100%;text-align:left;border:1px solid #e5ebf0;background:#f8fafc;border-radius:8px;padding:10px;margin:8px 0;color:#34465a}.draft.active{border-color:#7898b6;background:#edf4fa}.draft strong,.draft span{display:block}.draft span{font-size:11px;color:#718096;margin-top:5px}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin:16px 0}.metrics div{background:#f7f9fb;border:1px solid #e7edf2;border-radius:8px;padding:12px}.metrics strong,.metrics small{display:block}.metrics strong{font-size:20px}.metrics small{font-size:11px;color:#718096}.detail{min-width:0}.empty{min-height:200px}.editor{margin-top:16px}.editor summary{cursor:pointer;font-weight:600}.editor textarea{display:block;width:100%;min-height:240px;margin:10px 0;border:1px solid #d6dee7;border-radius:8px;padding:10px;font:12px/1.5 ui-monospace,monospace}.editor button{border:0;border-radius:7px;padding:9px 14px;background:#315f87;color:white;cursor:pointer}.warnings{background:#fff9f0;border:1px solid #f0dfc7;border-radius:8px;padding:12px;margin-top:18px}.count{background:#edf2f7;border-radius:12px;padding:2px 8px;font-size:12px}@media(max-width:900px){.workspace{grid-template-columns:1fr}.hero{display:block}.metrics{grid-template-columns:repeat(2,1fr)}}
 </style>
