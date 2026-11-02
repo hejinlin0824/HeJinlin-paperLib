@@ -127,6 +127,9 @@ Optional switches:
 .\scripts\test_v4.ps1 -InstallDependencies
 .\scripts\test_v4.ps1 -LauncherPreflight
 .\scripts\test_v4.ps1 -SkipFrontend
+.\scripts\test_v4.ps1 -RunLiveModel -PaperId "<论文ID>"
 ```
 
-Logs and a JSON summary are written to a timestamped directory under `$env:TEMP\paperlib-v4-test-*`. Real-provider performance/quality testing remains a separate, explicitly initiated test because it incurs API usage and depends on the user's configured model.
+The optional live mode starts a temporary local API server if port 8300 is not already serving PaperLib, submits one V4 understanding job for the selected paper, polls its draft, and writes `live-model-report.json`. It uses the model/provider configured in PaperLib settings and can incur API charges. It adds a V4 draft and local search-index rows to the selected paper's library database; it does not approve/import the draft into the formal knowledge graph. Do not use a paper ID unless you intend to create this test draft.
+
+Logs and a JSON summary are written to a timestamped directory under `$env:TEMP\paperlib-v4-test-*`. The default command makes no real model API calls.
