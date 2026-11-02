@@ -25,7 +25,7 @@ const paperTitle = (id) => {
 async function refresh() {
   const [p, d] = await Promise.all([api.papers(), api.kgV4Drafts()])
   papers.value = Array.isArray(p) ? p : (p.items || p.papers || [])
-  drafts.value = d || []
+  drafts.value = (d || []).filter(item => item.version === '4.0')
 }
 async function loadDraft(id) {
   draftId.value = id
@@ -97,7 +97,8 @@ async function review(status) {
   if (!current.value || !payload.value) return
   busy.value = true
   try {
-    current.value = await api.kgV4Review(current.value.id, status, payload.value)
+    const edited = JSON.parse(jsonText.value)
+    current.value = await api.kgV4Review(current.value.id, status, edited)
     payload.value = JSON.parse(JSON.stringify(current.value.payload || {}))
     jsonText.value = JSON.stringify(payload.value, null, 2)
     await refresh()
