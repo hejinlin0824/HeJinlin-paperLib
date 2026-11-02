@@ -43,7 +43,8 @@ local directory before starting PaperLib:
 
 ```powershell
 pip install -r backend/requirements-intelligence.txt
-$env:PAPERLIB_BGE_M3_PATH = "E:\\models\\bge-m3"\n$env:PAPERLIB_GLINER_PATH = "E:\\models\\gliner"  # optional
+$env:PAPERLIB_BGE_M3_PATH = "E:\models\bge-m3"
+$env:PAPERLIB_GLINER_PATH = "E:\models\gliner"  # optional
 ```
 
 If the model path or optional package is unavailable, lexical-only mode remains the
@@ -65,7 +66,7 @@ A dedicated vector database can be introduced later if measured corpus size requ
 先在 V4 工作台生成一份新档案，再从 V4 任务列表复制 draft ID。执行只读评测：
 
 ```powershell
-.\\.venv\\Scripts\\python.exe tools\\evaluate_paper_understanding.py --draft-id YOUR_DRAFT_ID
+.\.venv\Scripts\python.exe tools\evaluate_paper_understanding.py --draft-id YOUR_DRAFT_ID
 ```
 
 评测报告包含：
