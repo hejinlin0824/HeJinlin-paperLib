@@ -97,7 +97,9 @@ def _encode_one(model, text: str) -> list[float]:
     encoded = model.encode([text])
     # FlagEmbedding BGEM3FlagModel returns a dict; tolerate compatible encoders too.
     if isinstance(encoded, dict):
-        encoded = encoded.get("dense_vecs") or encoded.get("sentence_embeddings")
+        encoded = encoded.get("dense_vecs")
+        if encoded is None:
+            encoded = model.encode([text]).get("sentence_embeddings")
     vector = encoded[0]
     if hasattr(vector, "tolist"):
         vector = vector.tolist()
