@@ -264,6 +264,57 @@ def search_blocks(query: str, paper_id: str | None = None, top_k: int = DEFAULT_
                         for x in ranked]}
 
 
+def search_approved_graph(query: str, paper_id: str | None = None, top_k: int = 10) -> dict[str, Any]:
+    """Retrieve graph neighborhoods only from human-approved V4 drafts."""
+    from . import kg_understanding as legacy
+    legacy.ensure_tables()
+    sql = "SELECT id,paper_id,payload_json FROM kg_understanding_drafts WHERE version=? AND status='approved'"
+    args: tuple = ("4.0",)
+    if paper_id:
+        sql += " AND paper_id=?"
+        args = ("4.0", paper_id)
+    drafts = rows(sql, args)
+    qterms = set(tokenize(query))
+    results = []
+    for draft in drafts:
+        payload = loads(draft.get("payload_json"), {})
+        nodes = payload.get("contributions") or []
+        by_id = {str(node.get("id")): node for node in nodes if node.get("id")}
+        matched = []
+        for node in nodes:
+            text = f"{node.get('title') or ''} {node.get('description') or ''}"
+            terms = set(tokenize(text))
+            overlap = qterms & terms
+            if overlap:
+                matched.append((len(overlap) / max(1, len(qterms)), node))
+        matched.sort(key=lambda item: item[0], reverse=True)
+        selected = {str(node.get("id")) for _, node in matched[:max(1, min(int(top_k), 50))]}
+        paths = []
+        related_ids = set(selected)
+        for edge in payload.get("relations") or []:
+            source, target = str(edge.get("source_id") or ""), str(edge.get("target_id") or "")
+            if source in selected or target in selected:
+                paths.append({"kind": "directed_relation", **edge})
+                related_ids.update(x for x in (source, target) if x in by_id)
+        for edge in payload.get("theory_logic") or []:
+            sources = [str(x) for x in edge.get("source_ids") or []]
+            target = str(edge.get("target_id") or "")
+            if selected.intersection(sources) or target in selected:
+                paths.append({"kind": "theory_hyperedge", **edge})
+                related_ids.update(x for x in sources if x in by_id)
+                if target in by_id:
+                    related_ids.add(target)
+        if matched:
+            results.append({
+                "draft_id": draft["id"], "paper_id": draft["paper_id"],
+                "matched_nodes": [{"score": round(score, 4), **node} for score, node in matched[:top_k]],
+                "context_nodes": [by_id[node_id] for node_id in related_ids if node_id in by_id],
+                "graph_paths": paths,
+            })
+    results.sort(key=lambda item: max((x["score"] for x in item["matched_nodes"]), default=0), reverse=True)
+    return {"query": query, "mode": "approved_v4_graph", "results": results[:max(1, min(int(top_k), 50))]}
+
+
 @lru_cache(maxsize=1)
 def _load_gliner():
     model_path = os.environ.get("PAPERLIB_GLINER_PATH", "").strip()
