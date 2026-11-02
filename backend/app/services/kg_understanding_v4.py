@@ -91,6 +91,71 @@ def _compact_notes(notes: list[dict]) -> str:
     return json.dumps(compact, ensure_ascii=False)
 
 
+CHUNK_BATCH_MAX_CHARS = 11800
+CHUNK_BATCH_MAX_ITEMS = 2
+
+
+def _build_chunk_batches(chunks: list[dict]) -> list[list[int]]:
+    """Pack adjacent short chunks from the same section; never merge across sections."""
+    batches: list[list[int]] = []
+    current: list[int] = []
+    current_chars = 0
+    current_section = None
+    for index, chunk in enumerate(chunks):
+        prompt_chars = len(v31._chunk_prompt("", chunk))
+        section = chunk.get("section_index")
+        if current and (section != current_section
+                        or len(current) >= CHUNK_BATCH_MAX_ITEMS
+                        or current_chars + prompt_chars > CHUNK_BATCH_MAX_CHARS):
+            batches.append(current)
+            current, current_chars = [], 0
+        if not current:
+            current_section = section
+        current.append(index)
+        current_chars += prompt_chars
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _batch_chunk_prompt(title: str, batch_id: int, indexes: list[int], chunks: list[dict]) -> str:
+    parts = [f"论文：{title}", f"本请求包含 {len(indexes)} 个独立片段。必须逐个分析，不能跨片段合并证据。"]
+    for index in indexes:
+        chunk = chunks[index]
+        parts.append(f"<chunk id=\"{index}\">\\n{v31._chunk_prompt(title, chunk)}\\n</chunk>")
+    parts.append(
+        "只输出 JSON：{\\\"chunks\\\":[{\\\"chunk_id\\\":0,\\\"section_role\\\":\\\"...\\\","
+        "\\\"summary\\\":\\\"...\\\",\\\"claims\\\":[],\\\"argument_steps\\\":[],"
+        "\\\"candidate_contributions\\\":[],\\\"open_questions\\\":[]}] }。"
+        "chunks 数组必须对输入的每个 chunk id 恰好返回一项；不得遗漏、重复或改写 block_id。"
+    )
+    return "\\n\\n".join(parts)
+
+
+def _normalise_batch_notes(raw_response: str, expected: list[int], chunks: list[dict]) -> dict[int, dict]:
+    parsed = legacy._json(raw_response)
+    if not isinstance(parsed, dict) or not isinstance(parsed.get("chunks"), list):
+        return {}
+    accepted: dict[int, dict] = {}
+    expected_set = set(expected)
+    for item in parsed["chunks"]:
+        if not isinstance(item, dict):
+            continue
+        try:
+            chunk_id = int(item.get("chunk_id"))
+        except (TypeError, ValueError):
+            continue
+        if chunk_id not in expected_set or chunk_id in accepted or not item.get("summary"):
+            continue
+        accepted[chunk_id] = {
+            "title": chunks[chunk_id]["section"],
+            "chunk_index": chunks[chunk_id]["chunk_index"],
+            "section_index": chunks[chunk_id]["section_index"],
+            **{key: value for key, value in item.items() if key != "chunk_id"},
+        }
+    return accepted
+
+
 async def run_understanding(draft_id: str) -> None:
     legacy.ensure_tables()
     draft = row("SELECT * FROM kg_understanding_drafts WHERE id=?", (draft_id,))
@@ -138,45 +203,72 @@ async def run_understanding(draft_id: str) -> None:
         else:
             max_concurrency = max(1, min(3, int(info.get("concurrency") or 2)))
             semaphore = asyncio.Semaphore(max_concurrency)
-            payload["pipeline"]["llm_operations"] += len(chunks)
+            batches = _build_chunk_batches(chunks)
+            payload["pipeline"]["chunk_batches"] = len(batches)
+            payload["pipeline"]["chunk_batch_sizes"] = [len(batch) for batch in batches]
+            payload["pipeline"]["llm_operations"] += len(batches)
 
-            async def analyze_chunk(index: int, chunk: dict):
+            async def analyze_single(index: int):
+                chunk = chunks[index]
+                raw_response = await _chat_v4(info, [
+                    {"role": "system", "content": v31.CHUNK_SYSTEM},
+                    {"role": "user", "content": v31._chunk_prompt(title, chunk)},
+                ], max_tokens=2200)
+                result = legacy._json(raw_response)
+                if not result:
+                    preview = " ".join(str(raw_response or "").split())[:180]
+                    raise RuntimeError(
+                        "模型未返回合法 JSON；"
+                        f"response_chars={len(str(raw_response or ''))}; "
+                        f"response_preview={preview!r}"
+                    )
+                return {"title": chunk["section"], "chunk_index": chunk["chunk_index"],
+                        "section_index": chunk["section_index"], **result}
+
+            async def analyze_batch(batch_number: int, indexes: list[int]):
                 async with semaphore:
-                    try:
-                        raw_response = await _chat_v4(info, [
-                            {"role": "system", "content": v31.CHUNK_SYSTEM},
-                            {"role": "user", "content": v31._chunk_prompt(title, chunk)},
-                        ], max_tokens=2200)
-                        result = legacy._json(raw_response)
-                        if not result:
-                            preview = " ".join(str(raw_response or "").split())[:180]
-                            raise RuntimeError(
-                                "模型未返回合法 JSON；"
-                                f"response_chars={len(str(raw_response or ''))}; "
-                                f"response_preview={preview!r}"
-                            )
-                        note = {"title": chunk["section"], "chunk_index": chunk["chunk_index"],
-                                "section_index": chunk["section_index"], **result}
-                        return index, note, None
-                    except Exception as exc:
-                        error = {"section": chunk["section"], "chunk_index": chunk["chunk_index"],
-                                 "error_type": type(exc).__name__, "message": str(exc)[:240]}
-                        return index, None, error
+                    batch_notes: dict[int, dict] = {}
+                    if len(indexes) > 1:
+                        try:
+                            raw = await _chat_v4(info, [
+                                {"role": "system", "content": v31.CHUNK_SYSTEM + "\\n\\n批量模式：每个 <chunk id> 是独立任务。"
+                                 "严格返回 {\\\"chunks\\\":[{\\\"chunk_id\\\":整数,\\\"section_role\\\":...,"
+                                 "\\\"summary\\\":...,\\\"claims\\\":...,\\\"argument_steps\\\":...,"
+                                 "\\\"candidate_contributions\\\":...,\\\"open_questions\\\":...}]}。"},
+                                {"role": "user", "content": _batch_chunk_prompt(title, batch_number, indexes, chunks)},
+                            ], max_tokens=min(6600, 2200 * len(indexes)))
+                            batch_notes = _normalise_batch_notes(raw, indexes, chunks)
+                        except Exception as exc:
+                            logger.warning("V4 chunk batch %s failed; falling back to single chunks: %s",
+                                           batch_number, type(exc).__name__)
+                    missing = [index for index in indexes if index not in batch_notes]
+                    for index in missing:
+                        try:
+                            payload["pipeline"]["llm_operations"] += 1
+                            batch_notes[index] = await analyze_single(index)
+                        except Exception as exc:
+                            failed.append({"section": chunks[index]["section"],
+                                           "chunk_index": chunks[index]["chunk_index"],
+                                           "error_type": type(exc).__name__, "message": str(exc)[:240]})
+                    return batch_notes
 
-            tasks = [asyncio.create_task(analyze_chunk(index, chunk))
-                     for index, chunk in enumerate(chunks)]
-            for finished, future in enumerate(asyncio.as_completed(tasks), 1):
-                index, note, error = await future
-                if note is not None:
+            tasks = [asyncio.create_task(analyze_batch(batch_number, indexes))
+                     for batch_number, indexes in enumerate(batches)]
+            completed_chunks = 0
+            for future in asyncio.as_completed(tasks):
+                batch_notes = await future
+                for index, note in batch_notes.items():
                     notes.append(note)
                     processed_chars += sum(len(segment["text"]) for segment in chunks[index]["segments"])
-                if error is not None:
-                    failed.append(error)
-                    warnings.append(f"章节“{error['section']}”分块 {error['chunk_index']+1} 失败：{error['error_type']}")
+                completed_chunks += len(batch_notes) + sum(
+                    1 for error in failed if error["section"] in {
+                        chunks[index]["section"] for index in range(len(chunks))
+                    }
+                )
                 notes.sort(key=lambda item: (item.get("section_index", 0), item.get("chunk_index", 0)))
                 failed.sort(key=lambda item: (item["section"], item["chunk_index"]))
                 payload["chunk_notes"] = notes
-                payload["chunk_progress"] = {"completed": finished, "total": len(chunks)}
+                payload["chunk_progress"] = {"completed": len(notes) + len(failed), "total": len(chunks)}
                 payload["coverage"] = {
                     "section_count": len(sections), "chunk_count": len(chunks),
                     "completed_chunks": len(notes), "failed_chunks": len(failed), "not_attempted_chunks": 0,
@@ -273,7 +365,7 @@ async def run_understanding(draft_id: str) -> None:
         if ready and edges:
             try:
                 payload["pipeline"]["llm_operations"] += 1
-                verdicts = legacy._json(await chat(info, [
+                verdicts = legacy._json(await _chat_v4(info, [
                     {"role": "system", "content": "你是学术关系语义核验器。逐条判断证据是否蕴含关系。联合充分关系必须把所有前提作为整体检查。不得依赖常识补足证据。只输出 JSON，格式为 verifications 数组，每项包含 id、verdict（entailed/not_entailed/uncertain）、reason。"},
                     {"role": "user", "content": json.dumps({"edges": edges}, ensure_ascii=False)},
                 ], max_tokens=2200))
