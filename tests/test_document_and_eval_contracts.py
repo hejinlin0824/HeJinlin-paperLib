@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 import pytest
-from app.services.md2blocks import from_content_list
+from app.services.md2blocks import from_content_list, from_mineru_dir
 from app.services.paper_document_contract import normalize_mineru_document, validate_mineru_document
 from app.services.structured_output import StructuredOutputValidationError, chunk_analysis_schema, parse_and_validate
 from app.services.ragas_eval import load_eval_fixture, run_ragas
@@ -123,3 +123,25 @@ def test_translate_chat_includes_response_format_without_network(monkeypatch):
         max_tokens=64, retries=1, response_format=response_spec))
     assert result == '{"ok":true}'
     assert captured["response_format"] == response_spec
+
+
+
+def test_mineru_directory_adapter_returns_contract_metadata(tmp_path):
+    extract_dir = tmp_path / "mineru-result"
+    extract_dir.mkdir()
+    raw = json.loads((ROOT / "fixtures/synthetic_mineru_content_list.json").read_text(encoding="utf-8"))
+    (extract_dir / "synthetic_content_list.json").write_text(
+        json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+    result = from_mineru_dir(extract_dir, tmp_path / "work")
+    assert result["meta"]["document_contract"]["schema_version"] == "paper-document/1.0"
+    assert result["meta"]["document_validation_errors"] == []
+    assert result["meta"]["document_contract"]["source_engine"] == "mineru"
+
+
+def test_mineru_markdown_fallback_is_explicitly_labeled(tmp_path):
+    extract_dir = tmp_path / "mineru-markdown"
+    extract_dir.mkdir()
+    (extract_dir / "paper.md").write_text("# Synthetic title\n\nA synthetic paragraph for fallback parsing.\n", encoding="utf-8")
+    result = from_mineru_dir(extract_dir, tmp_path / "work")
+    assert result["meta"]["document_contract"]["source_engine"] == "mineru_markdown_fallback"
+    assert result["meta"]["document_validation_errors"] == []
