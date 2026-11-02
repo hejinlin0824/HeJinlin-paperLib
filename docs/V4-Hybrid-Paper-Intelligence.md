@@ -64,8 +64,8 @@ A dedicated vector database can be introduced later if measured corpus size requ
 
 ## Failure and data-safety contract
 
-- Failed chunks do not erase successful chunks or chapter summaries.
-- Synthesis failure falls back to evidence-linked rule candidates and a recoverable draft.
+- Failed chunks do not erase successful chunks or chapter summaries. Chunk requests run with bounded concurrency (maximum 3) and a V4-specific 90-second timeout / 2-attempt retry policy; legacy translation defaults are unchanged.
+- Synthesis failure falls back to evidence-linked rule candidates and a recoverable draft. Rule outputs are explicitly tagged `rule_candidate`, never mislabeled as formal definitions.
 - No model failure is allowed to write to V2 `kg_entities`, `kg_relations`, or `kg_evidence`.
 - Index tables are separate from paper content and old graph tables.
 - Dense embeddings are optional; no network request occurs during lexical indexing/search.
