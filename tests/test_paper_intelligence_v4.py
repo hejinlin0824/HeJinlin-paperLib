@@ -118,3 +118,21 @@ def test_llm_chunk_failure_keeps_a_recoverable_v4_draft(isolated_db, monkeypatch
     assert saved["payload"]["version"] == "4.0"
     assert saved["payload"]["coverage"]["failed_chunks"] >= 1
     assert any("分块" in warning for warning in saved["warnings"])
+
+
+def test_quality_evaluator_reports_proxy_metrics_and_evidence_accuracy():
+    from app.services.paper_quality_eval import evaluate_payload
+    gold = {"expected_concepts": ["agent loop", "joint sufficiency"],
+            "expected_negative_cases": ["A UI is not necessary"]}
+    payload = {
+        "contributions": [{"title": "Agent loop", "evidence": [{"block_id": 2, "quote": "Agent loop is required."}]}],
+        "theory_logic": [{"relation_type": "JOINTLY_SUFFICIENT_FOR", "source_ids": ["a", "b"],
+                          "target_id": "h", "verification": "unverified",
+                          "evidence": {"block_id": 2, "quote": "Agent loop is required."}}],
+        "relations": [],
+    }
+    report = evaluate_payload(payload, gold, {2: "Agent loop is required."})
+    assert report["evidence_exact_match_rate"] == 1.0
+    assert report["joint_sufficiency_hyperedge_shape_rate"] == 1.0
+    assert report["unverified_edge_count"] == 1
+    assert report["negative_cases_for_human_review"] == ["A UI is not necessary"]
