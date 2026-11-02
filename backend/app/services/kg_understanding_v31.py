@@ -43,6 +43,10 @@ LOGIC_BACKFILL_SYSTEM = """你是形式化论证审查员。仅根据给出的�
 输出 JSON：{"theory_logic":[{"id":"logic1","relation_type":"HAS_NECESSARY_CONDITION|JOINTLY_SUFFICIENT_FOR|EQUIVALENT_TO|IMPLIES|NOT_REQUIRED|SPECIALIZATION_OF|EXCLUDES|CONTRADICTS","source_ids":["节点ID"],"target_id":"节点ID","statement":"中文说明","evidence":{"block_id":1,"quote":"原文连续逐字摘录"}}]}。
 JOINTLY_SUFFICIENT_FOR 的 source_ids 必须包含两个或以上条件；必要条件关系是单个条件到被定义概念。不得把“由...组成”自动当作充分性证明。NOT_REQUIRED 用于作者明确说某属性不是必要条件。证据必须逐字来自输入，证据不足则不输出。"""
 
+LOGIC_VERIFY_SYSTEM = """你是形式化逻辑关系验证员。审查给定 source_ids（可能多个前提）到 target_id 的关系是否被 quote 直接支持。
+只输出 JSON：{"verdict":"entailed|not_entailed|uncertain","reason":"中文理由"}。
+JOINTLY_SUFFICIENT_FOR 必须检查所有 source 前提的合取是否共同足以推出 target，不能把单个前提误判为充分。HAS_NECESSARY_CONDITION / NECESSARY_FOR 必须检查必要性方向。仅有组成关系不能证明充分性。证据不完整或语义不明确时输出 uncertain。"""
+
 def _split_text(text: str, limit: int) -> list[str]:
     text = (text or "").strip()
     if not text:
@@ -294,7 +298,24 @@ async def run_understanding(draft_id: str) -> None:
             if logic_result:
                 payload["theory_logic"] = logic_result.get("theory_logic", [])
                 warnings.extend(_validate_logic(payload, block_map))
-        # Semantic verifier only verifies binary edge candidates; joint sufficiency stays a hyperedge.
+        # Verify theory hyperedges with a verifier that sees every premise together.
+        payload["progress_stage"] = "theory_logic_verification"
+        for logic in payload.get("theory_logic", []):
+            logic_prompt = json.dumps({
+                "relation_type": logic["relation_type"],
+                "source_nodes": [node_map.get(node_id) for node_id in logic["source_ids"]],
+                "target_node": node_map.get(logic["target_id"]),
+                "statement": logic["statement"],
+                "quote": logic["evidence"]["quote"],
+            }, ensure_ascii=False)
+            logic_verdict = legacy._json(await chat(info, [
+                {"role": "system", "content": LOGIC_VERIFY_SYSTEM},
+                {"role": "user", "content": logic_prompt},
+            ], max_tokens=700))
+            logic["verification"] = logic_verdict.get("verdict", "uncertain") if logic_verdict else "uncertain"
+            logic["reason"] = str(logic_verdict.get("reason") or "")[:500] if logic_verdict else "逻辑验证器未返回有效结论"
+            legacy._persist_progress(draft_id, model_name, payload, warnings)
+        # Verify ordinary directed relations independently.
         payload["progress_stage"] = "relation_verification"
         legacy._persist_progress(draft_id, model_name, payload, warnings)
         node_map = legacy.nodes_by_id(payload)
