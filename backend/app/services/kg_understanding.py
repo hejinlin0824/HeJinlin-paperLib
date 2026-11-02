@@ -14,6 +14,7 @@ from ..util import dumps, loads, new_id, now
 from .translate import chat, engine_info, engine_ready
 
 VERSION = "3.0"
+V3_RELATION_TYPES = {"CONSISTS_OF", "SUPPORTS", "PROVES", "DERIVES", "NECESSARY_FOR", "SUFFICIENT_FOR", "IMPLIES"}
 MAX_SECTION_CHARS = 5200
 MAX_INPUT_CHARS = 26000
 
@@ -143,7 +144,11 @@ def _normalise_relations(payload: dict, block_map: dict[int,str]) -> list[str]:
         if src not in nodes or tgt not in nodes or src == tgt or len(quote) < 12 or quote not in block_map.get(bid,""):
             warnings.append("一条候选关系缺少有效端点或原文证据，已移除")
             continue
-        accepted.append({"source_id":src,"target_id":tgt,"relation_type":str(rel.get("relation_type") or "RELATED_TO"),
+        relation_type = str(rel.get("relation_type") or "").upper()
+        if relation_type not in V3_RELATION_TYPES:
+            warnings.append(f"未知关系类型 {relation_type!r}，已移除")
+            continue
+        accepted.append({"source_id":src,"target_id":tgt,"relation_type":relation_type,
                          "evidence":{"block_id":bid,"quote":quote},"verification":"unverified","reason":""})
     payload["relations"] = accepted
     return warnings
