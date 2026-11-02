@@ -311,3 +311,7 @@ def search_blocks(query: str, paper_id: str | None = None, top_k: int = 8) -> di
 
 def structure_candidates(paper_id: str) -> dict:
     return intelligence.extract_structure_candidates(paper_id)
+
+
+def search_graph_context(query: str, paper_id: str | None = None, top_k: int = 10) -> dict:
+    return intelligence.search_approved_graph(query, paper_id, top_k)
