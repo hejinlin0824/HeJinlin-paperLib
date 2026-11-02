@@ -93,6 +93,17 @@ def _section_titles(paper_id: str) -> dict[int, str]:
     return result
 
 
+def _encode_one(model, text: str) -> list[float]:
+    encoded = model.encode([text])
+    # FlagEmbedding BGEM3FlagModel returns a dict; tolerate compatible encoders too.
+    if isinstance(encoded, dict):
+        encoded = encoded.get("dense_vecs") or encoded.get("sentence_embeddings")
+    vector = encoded[0]
+    if hasattr(vector, "tolist"):
+        vector = vector.tolist()
+    return [float(x) for x in vector]
+
+
 def index_paper(paper_id: str, include_embeddings: bool = False) -> dict[str, Any]:
     """Index parsed English blocks. Re-indexing replaces only this paper's search index."""
     ensure_tables()
@@ -106,6 +117,7 @@ def index_paper(paper_id: str, include_embeddings: bool = False) -> dict[str, An
     )
     model = _load_embedding_model() if include_embeddings else None
     indexed, chars = 0, 0
+    seen_ids = set()
     with db() as conn:
         for block in blocks:
             text = str(block.get("en") or "").strip()
@@ -167,7 +179,7 @@ def _dense_query(query: str) -> list[float] | None:
     model = _load_embedding_model()
     if model is None:
         return None
-    return [float(x) for x in model.encode([query])[0]]
+    return _encode_one(model, query)
 
 
 def search_blocks(query: str, paper_id: str | None = None, top_k: int = DEFAULT_TOP_K,
