@@ -213,7 +213,7 @@ def test_graph_context_retrieves_only_approved_v4_nodes_and_hyperedges(isolated_
         "relations": [],
         "theory_logic": [{"id": "joint", "relation_type": "JOINTLY_SUFFICIENT_FOR",
                           "source_ids": ["loop", "tools"], "target_id": "harness",
-                          "statement": "Loop and tools jointly support the harness definition.",
+                          "statement": "Loop and tools jointly support the harness definition.", "verification": "entailed",
                           "evidence": {"block_id": first, "quote": "Definition 1. An agent harness is a runtime engineering layer."}}],
     }
     assert intel.search_approved_graph("agent harness", "harness-paper")["results"] == []
