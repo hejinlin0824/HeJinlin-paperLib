@@ -349,7 +349,8 @@ async def run_understanding(draft_id: str) -> None:
             "processed_chars": processed_chars,
             "input_coverage": round(processed_chars / max(1, total_chars), 4),
             "complete": False})
-        legacy._persist_progress(draft_id, model_name, payload, warnings, "failed")
+        recoverable = bool(payload.get("section_map") or payload.get("chunk_notes"))
+        legacy._persist_progress(draft_id, model_name, payload, warnings, "draft" if recoverable else "failed")
 
 
 # Preserve the existing isolated draft/review API while versioning new jobs as 3.1.
