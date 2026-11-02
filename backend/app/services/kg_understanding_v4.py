@@ -167,7 +167,7 @@ async def run_understanding(draft_id: str) -> None:
                 payload["chunk_progress"] = {"completed": finished, "total": len(chunks)}
                 payload["coverage"] = {
                     "section_count": len(sections), "chunk_count": len(chunks),
-                    "completed_chunks": len(notes), "failed_chunks": len(failed),
+                    "completed_chunks": len(notes), "failed_chunks": len(failed), "not_attempted_chunks": 0,
                     "total_blocks": len(block_map), "total_chars": total_chars,
                     "processed_chars": processed_chars,
                     "chunked_chars": total_chunk_chars,
@@ -224,7 +224,8 @@ async def run_understanding(draft_id: str) -> None:
         payload["section_map"] = payload.get("section_map") or section_map
         payload["coverage"] = payload.get("coverage") or {
             "section_count": len(sections), "chunk_count": len(chunks), "completed_chunks": len(notes),
-            "failed_chunks": len(failed), "total_blocks": len(block_map), "total_chars": total_chars,
+            "failed_chunks": len(failed), "not_attempted_chunks": len(chunks) if not ready else 0,
+            "total_blocks": len(block_map), "total_chars": total_chars,
             "processed_chars": 0, "chunked_chars": total_chunk_chars, "input_coverage": 0.0,
             "complete": False,
         }
