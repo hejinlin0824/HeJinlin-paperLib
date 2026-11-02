@@ -22,7 +22,7 @@ or V3/V3.1 drafts. New V4 understanding drafts are versioned as 4.0 in the isola
 6. **Knowledge modeling** — evidence is checked against the original block map; ordinary
    directed relations and multi-premise theory hyperedges remain separate. Unverified
    edges are explicitly marked `unverified`.
-7. **Graph context retrieval** — combines block retrieval with graph neighborhoods from human-approved V4 drafts only. Unreviewed candidates and noisy V2/V3 graph records are excluded from this GraphRAG context path.
+7. **Graph context retrieval** — combines block retrieval with graph neighborhoods from human-approved V4 drafts only. Unreviewed candidates and noisy V2/V3 graph records are excluded; relation paths must also retain an explicit `entailed` verdict and pass exact-source revalidation.
 8. **Evaluation** — the Harness reference fixture records expected concepts and negative
    cases. Automated tests verify pipeline contracts; semantic precision/recall still
    requires a human-checked gold annotation.
