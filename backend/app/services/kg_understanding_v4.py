@@ -96,21 +96,16 @@ CHUNK_BATCH_MAX_ITEMS = 2
 
 
 def _build_chunk_batches(chunks: list[dict]) -> list[list[int]]:
-    """Pack adjacent short chunks from the same section; never merge across sections."""
+    """Pack adjacent short chunks; each retains its own section and block IDs."""
     batches: list[list[int]] = []
     current: list[int] = []
     current_chars = 0
-    current_section = None
     for index, chunk in enumerate(chunks):
         prompt_chars = len(v31._chunk_prompt("", chunk))
-        section = chunk.get("section_index")
-        if current and (section != current_section
-                        or len(current) >= CHUNK_BATCH_MAX_ITEMS
+        if current and (len(current) >= CHUNK_BATCH_MAX_ITEMS
                         or current_chars + prompt_chars > CHUNK_BATCH_MAX_CHARS):
             batches.append(current)
             current, current_chars = [], 0
-        if not current:
-            current_section = section
         current.append(index)
         current_chars += prompt_chars
     if current:
