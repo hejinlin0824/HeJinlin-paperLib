@@ -41,7 +41,14 @@ try {
     Start-Transcript -Path $transcript -Force | Out-Null
     Set-Location $root
 
-    $python = Join-Path $root ".venv\Scripts\python.exe"
+    $venvPython = Join-Path $root ".venv\Scripts\python.exe"
+    if ($InstallDependencies -and -not (Test-Path $venvPython)) {
+        $bootstrapPython = Get-Command python -ErrorAction SilentlyContinue
+        if (-not $bootstrapPython) { throw "Python 3.10+ was not found. Install Python first." }
+        & $bootstrapPython.Source -m venv (Join-Path $root ".venv")
+        if ($LASTEXITCODE -ne 0) { throw "Failed to create the project virtual environment." }
+    }
+    $python = $venvPython
     if (-not (Test-Path $python)) {
         $pythonCommand = Get-Command python -ErrorAction SilentlyContinue
         if (-not $pythonCommand) { throw "Python 3.10+ was not found. Install Python or create .venv first." }
