@@ -223,3 +223,39 @@ def test_graph_context_retrieves_only_approved_v4_nodes_and_hyperedges(isolated_
     group = result["results"][0]
     assert any(node["id"] == "harness" for node in group["matched_nodes"])
     assert any(edge["kind"] == "theory_hyperedge" for edge in group["graph_paths"])
+
+
+def test_chunk_batching_reduces_calls_without_crossing_section_boundaries():
+    chunks = [
+        {"section": "Method", "section_index": 0, "chunk_index": 0,
+         "segments": [{"block_id": 1, "text": "First short chunk."}]},
+        {"section": "Method", "section_index": 0, "chunk_index": 1,
+         "segments": [{"block_id": 2, "text": "Second short chunk."}]},
+        {"section": "Experiments", "section_index": 1, "chunk_index": 0,
+         "segments": [{"block_id": 3, "text": "A different section."}]},
+    ]
+    batches = v4._build_chunk_batches(chunks)
+    assert batches == [[0, 1], [2]]
+    response = json.dumps({"chunks": [
+        {"chunk_id": 1, "section_role": "method", "summary": "Second summary.",
+         "claims": [], "argument_steps": [], "candidate_contributions": [], "open_questions": []},
+        {"chunk_id": 0, "section_role": "method", "summary": "First summary.",
+         "claims": [], "argument_steps": [], "candidate_contributions": [], "open_questions": []},
+    ]})
+    notes = v4._normalise_batch_notes(response, [0, 1], chunks)
+    assert set(notes) == {0, 1}
+    assert notes[0]["chunk_index"] == 0 and notes[1]["chunk_index"] == 1
+    assert notes[0]["title"] == notes[1]["title"] == "Method"
+
+
+def test_batch_parser_rejects_unknown_duplicate_and_empty_chunks():
+    chunks = [{"section": "Method", "section_index": 0, "chunk_index": 0, "segments": []}]
+    response = json.dumps({"chunks": [
+        {"chunk_id": 0, "summary": "Valid"},
+        {"chunk_id": 0, "summary": "Duplicate"},
+        {"chunk_id": 9, "summary": "Unknown"},
+        {"chunk_id": 0, "summary": ""},
+    ]})
+    notes = v4._normalise_batch_notes(response, [0], chunks)
+    assert list(notes) == [0]
+    assert notes[0]["summary"] == "Valid"
