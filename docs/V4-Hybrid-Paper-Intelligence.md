@@ -1,0 +1,71 @@
+# PaperLib V4 · Hybrid Paper Intelligence
+
+V4 is a local-first, optional hybrid layer. It does not replace the existing V2 graph
+or V3/V3.1 drafts. New V4 understanding drafts are versioned as 4.0 in the isolated
+`kg_understanding_drafts` table; no automatic promotion to the production graph occurs.
+
+## Processing architecture
+
+1. **Document structure** — reuses MinerU/built-in parser blocks, section boundaries and
+   original block IDs. No second PDF parser is introduced.
+2. **Retrieval index** — SQLite stores block text and token lists. BM25-style lexical
+   retrieval is always available, with no extra package and no network calls.
+3. **Optional dense retrieval** — BGE-M3 is opt-in. Set `PAPERLIB_BGE_M3_PATH` to an
+   already downloaded local model directory and install `backend/requirements-intelligence.txt`.
+   The app never downloads a model automatically. Without this setting, retrieval is lexical.
+4. **Academic NLP candidates** — conservative patterns detect definitions, assumptions,
+   theorems/propositions/lemmas, necessary/sufficient conditions, proofs and limitations.
+   Every candidate points to its source block and remains a candidate, not a verified fact.
+5. **Bounded LLM reasoning** — V4 analyzes bounded chunks, then performs one deterministic
+   JSON compaction step in Python (no model call), followed by a single synthesis call and
+   at most one batched relation-verification call. It does not call an LLM once per edge.
+6. **Knowledge modeling** — evidence is checked against the original block map; ordinary
+   directed relations and multi-premise theory hyperedges remain separate. Unverified
+   edges are explicitly marked `unverified`.
+7. **Evaluation** — the Harness reference fixture records expected concepts and negative
+   cases. Automated tests verify pipeline contracts; semantic precision/recall still
+   requires a human-checked gold annotation.
+
+## API
+
+- `POST /api/knowledge-graph/v4/papers/{paper_id}/index` — build local lexical index.
+- `POST /api/knowledge-graph/v4/papers/{paper_id}/index` with
+  `{"include_embeddings": true}` — build lexical + local BGE-M3 vectors.
+- `GET /api/knowledge-graph/v4/search?q=necessary%20conditions&paper_id=...` — hybrid search.
+- `GET /api/knowledge-graph/v4/papers/{paper_id}/structure-candidates` — rule-based candidates.
+- `POST /api/knowledge-graph/v4/papers/{paper_id}/understand` — create an isolated V4 draft.
+- `GET /api/knowledge-graph/v4/drafts` — list V4 and earlier isolated drafts.
+
+## BGE-M3 setup (optional)
+
+Download the BGE-M3 model yourself using an approved model source, then configure the
+local directory before starting PaperLib:
+
+```powershell
+pip install -r backend/requirements-intelligence.txt
+$env:PAPERLIB_BGE_M3_PATH = "E:\\models\\bge-m3"
+```
+
+If the model path or optional package is unavailable, lexical-only mode remains the
+default. FAISS/Qdrant/Neo4j are deliberately not required for the current single-user
+SQLite library: block-level vectors are stored in SQLite and cosine-ranked in process.
+A dedicated vector database can be introduced later if measured corpus size requires it.
+
+## Failure and data-safety contract
+
+- Failed chunks do not erase successful chunks or chapter summaries.
+- Synthesis failure falls back to evidence-linked rule candidates and a recoverable draft.
+- No model failure is allowed to write to V2 `kg_entities`, `kg_relations`, or `kg_evidence`.
+- Index tables are separate from paper content and old graph tables.
+- Dense embeddings are optional; no network request occurs during lexical indexing/search.
+- The UI/API confirmation flow remains separate from formal graph import.
+
+## Known limitations
+
+- Regex academic candidates are intentionally conservative and are not a substitute for
+  SciBERT/GLiNER fine-tuning or theorem parsing.
+- The first dense adapter is BGE-M3 through FlagEmbedding; model quality and memory use
+  need local measurement on the user's Windows machine.
+- RRF combines lexical and dense rankings; weights should be tuned against a labeled set,
+  not guessed from a single paper.
+- The Harness fixture is a target specification, not a substitute for checking the source PDF.
