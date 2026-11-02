@@ -9,6 +9,7 @@ const paperId = ref('')
 const draftId = ref('')
 const current = ref(null)
 const payload = ref(null)
+const jsonText = ref('')
 const query = ref('')
 const searchResults = ref([])
 const candidates = ref([])
@@ -30,6 +31,7 @@ async function loadDraft(id) {
   draftId.value = id
   current.value = await api.kgV4Draft(id)
   payload.value = JSON.parse(JSON.stringify(current.value.payload || {}))
+  jsonText.value = JSON.stringify(payload.value, null, 2)
   paperId.value = current.value.paper_id
 }
 async function buildIndex() {
@@ -79,12 +81,25 @@ async function reloadDraft() {
   catch (e) { toast(e.message || '刷新失败') }
   finally { busy.value = false }
 }
+async function saveDraft() {
+  if (!current.value) return
+  busy.value = true
+  try {
+    const edited = JSON.parse(jsonText.value)
+    current.value = await api.kgV4Save(current.value.id, edited)
+    payload.value = JSON.parse(JSON.stringify(current.value.payload || {}))
+    jsonText.value = JSON.stringify(payload.value, null, 2)
+    toast('V4 草稿修改已保存；未写入正式图谱')
+  } catch (e) { toast(e.message || 'JSON 无效或保存失败') }
+  finally { busy.value = false }
+}
 async function review(status) {
   if (!current.value || !payload.value) return
   busy.value = true
   try {
     current.value = await api.kgV4Review(current.value.id, status, payload.value)
     payload.value = JSON.parse(JSON.stringify(current.value.payload || {}))
+    jsonText.value = JSON.stringify(payload.value, null, 2)
     await refresh()
     toast(status === 'approved' ? 'V4 理解档案已确认，尚未写入正式图谱' : '档案已驳回')
   } catch (e) { toast(e.message || '审核失败') }
@@ -190,6 +205,12 @@ onMounted(async () => {
         <article v-for="section in (payload.section_map || [])" :key="section.title" class="result">
           <div class="result-head"><strong>{{ section.title }}</strong><span>{{ section.coverage_status }}</span></div><p>{{ section.summary }}</p>
         </article>
+        <details class="editor">
+          <summary>人工修订 JSON（高级）</summary>
+          <p class="hint">可编辑贡献、证据和关系；保存仅更新 V4 隔离草稿。</p>
+          <textarea v-model="jsonText" spellcheck="false"></textarea>
+          <button :disabled="busy" @click="saveDraft">校验并保存 JSON</button>
+        </details>
         <h3>人工审核</h3>
         <p class="hint">确认仅确认理解档案，不会自动写入 V2 正式知识图谱。</p>
         <div class="toolbar"><button :disabled="busy || current.status==='running'" @click="review('approved')">确认档案</button><button class="danger" :disabled="busy || current.status==='running'" @click="review('rejected')">驳回</button></div>
@@ -201,5 +222,5 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.intelligence-page{max-width:1500px;margin:auto;padding:28px 32px 60px;color:#263445}.hero{display:flex;justify-content:space-between;gap:20px;margin-bottom:22px}.hero h1{font-size:28px;margin:8px 0}.hero p,.hint,.muted{color:#718096}.eyebrow{font-size:11px;letter-spacing:.12em;color:#718096;font-weight:700}.hero nav{display:flex;gap:18px}.hero a,.result a{color:#456b91;text-decoration:none}.panel{background:#fff;border:1px solid #e3e9ef;border-radius:12px;padding:18px;margin-bottom:16px}.panel h2{font-size:18px;margin:0 0 14px}.panel h3{font-size:15px;margin:18px 0 8px}.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.toolbar select,.toolbar input{border:1px solid #d6dee7;border-radius:7px;padding:10px;min-width:240px;flex:1;font:inherit}.toolbar button{border:0;border-radius:7px;padding:10px 14px;background:#315f87;color:white;cursor:pointer}.toolbar button:disabled{opacity:.5}.toolbar .secondary{background:#edf2f7;color:#40566d}.toolbar .danger{background:#9a3e3e}.check{font-size:12px;color:#667789}.status-line{margin-top:12px;color:#456b91;font-size:13px}.result{border:1px solid #e7edf2;border-radius:8px;padding:12px;margin:9px 0}.result p{font-size:13px;line-height:1.65;color:#526174;white-space:pre-wrap}.result small,.result-head span{color:#718096;font-size:11px}.result-head{display:flex;justify-content:space-between;align-items:center;gap:12px}.result>a{display:block;font-size:12px;margin-top:6px}.workspace{display:grid;grid-template-columns:290px minmax(0,1fr);gap:16px;align-items:start}.draft{display:block;width:100%;text-align:left;border:1px solid #e5ebf0;background:#f8fafc;border-radius:8px;padding:10px;margin:8px 0;color:#34465a}.draft.active{border-color:#7898b6;background:#edf4fa}.draft strong,.draft span{display:block}.draft span{font-size:11px;color:#718096;margin-top:5px}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin:16px 0}.metrics div{background:#f7f9fb;border:1px solid #e7edf2;border-radius:8px;padding:12px}.metrics strong,.metrics small{display:block}.metrics strong{font-size:20px}.metrics small{font-size:11px;color:#718096}.detail{min-width:0}.empty{min-height:200px}.warnings{background:#fff9f0;border:1px solid #f0dfc7;border-radius:8px;padding:12px;margin-top:18px}.count{background:#edf2f7;border-radius:12px;padding:2px 8px;font-size:12px}@media(max-width:900px){.workspace{grid-template-columns:1fr}.hero{display:block}.metrics{grid-template-columns:repeat(2,1fr)}}
+.intelligence-page{max-width:1500px;margin:auto;padding:28px 32px 60px;color:#263445}.hero{display:flex;justify-content:space-between;gap:20px;margin-bottom:22px}.hero h1{font-size:28px;margin:8px 0}.hero p,.hint,.muted{color:#718096}.eyebrow{font-size:11px;letter-spacing:.12em;color:#718096;font-weight:700}.hero nav{display:flex;gap:18px}.hero a,.result a{color:#456b91;text-decoration:none}.panel{background:#fff;border:1px solid #e3e9ef;border-radius:12px;padding:18px;margin-bottom:16px}.panel h2{font-size:18px;margin:0 0 14px}.panel h3{font-size:15px;margin:18px 0 8px}.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.toolbar select,.toolbar input{border:1px solid #d6dee7;border-radius:7px;padding:10px;min-width:240px;flex:1;font:inherit}.toolbar button{border:0;border-radius:7px;padding:10px 14px;background:#315f87;color:white;cursor:pointer}.toolbar button:disabled{opacity:.5}.toolbar .secondary{background:#edf2f7;color:#40566d}.toolbar .danger{background:#9a3e3e}.check{font-size:12px;color:#667789}.status-line{margin-top:12px;color:#456b91;font-size:13px}.result{border:1px solid #e7edf2;border-radius:8px;padding:12px;margin:9px 0}.result p{font-size:13px;line-height:1.65;color:#526174;white-space:pre-wrap}.result small,.result-head span{color:#718096;font-size:11px}.result-head{display:flex;justify-content:space-between;align-items:center;gap:12px}.result>a{display:block;font-size:12px;margin-top:6px}.workspace{display:grid;grid-template-columns:290px minmax(0,1fr);gap:16px;align-items:start}.draft{display:block;width:100%;text-align:left;border:1px solid #e5ebf0;background:#f8fafc;border-radius:8px;padding:10px;margin:8px 0;color:#34465a}.draft.active{border-color:#7898b6;background:#edf4fa}.draft strong,.draft span{display:block}.draft span{font-size:11px;color:#718096;margin-top:5px}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:9px;margin:16px 0}.metrics div{background:#f7f9fb;border:1px solid #e7edf2;border-radius:8px;padding:12px}.metrics strong,.metrics small{display:block}.metrics strong{font-size:20px}.metrics small{font-size:11px;color:#718096}.detail{min-width:0}.empty{min-height:200px}.editor{margin-top:16px}.editor summary{cursor:pointer;font-weight:600}.editor textarea{display:block;width:100%;min-height:240px;margin:10px 0;border:1px solid #d6dee7;border-radius:8px;padding:10px;font:12px/1.5 ui-monospace,monospace}.editor button{border:0;border-radius:7px;padding:9px 14px;background:#315f87;color:white;cursor:pointer}.warnings{background:#fff9f0;border:1px solid #f0dfc7;border-radius:8px;padding:12px;margin-top:18px}.count{background:#edf2f7;border-radius:12px;padding:2px 8px;font-size:12px}@media(max-width:900px){.workspace{grid-template-columns:1fr}.hero{display:block}.metrics{grid-template-columns:repeat(2,1fr)}}
 </style>
