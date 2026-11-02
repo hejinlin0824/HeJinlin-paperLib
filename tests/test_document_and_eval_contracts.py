@@ -145,3 +145,14 @@ def test_mineru_markdown_fallback_is_explicitly_labeled(tmp_path):
     result = from_mineru_dir(extract_dir, tmp_path / "work")
     assert result["meta"]["document_contract"]["source_engine"] == "mineru_markdown_fallback"
     assert result["meta"]["document_validation_errors"] == []
+
+
+
+def test_synthetic_corpus_covers_all_supported_paper_families():
+    corpus = json.loads((ROOT / "fixtures/synthetic_paper_corpus_v1.json").read_text(encoding="utf-8"))
+    assert corpus["synthetic_only"] is True
+    assert {item["paper_type"] for item in corpus["documents"]} == {
+        "theory", "algorithm", "system", "empirical", "survey"
+    }
+    assert all(item["sections"] and all(section["blocks"] for section in item["sections"])
+               for item in corpus["documents"])

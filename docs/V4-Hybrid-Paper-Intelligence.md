@@ -202,3 +202,9 @@ PowerShell test-tier commands:
 `unit` runs only the synthetic MinerU/schema/Ragas fixture contracts. `integration` runs
 all backend tests with disposable SQLite databases. `full-sim` adds frontend tests and build.
 The real tier is intentionally gated and cannot be selected accidentally by the normal command.
+
+
+The synthetic corpus at `tests/fixtures/synthetic_paper_corpus_v1.json` covers all five
+supported paper families (theory, algorithm, system, empirical and survey). It contains
+short hand-authored blocks rather than full PDFs, so parser, schema and evaluation changes
+can be regression-tested in milliseconds without MinerU or model inference.
