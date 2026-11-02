@@ -205,6 +205,23 @@ def compact_chunk_notes(notes: list[dict], max_chars: int = 48000) -> tuple[str,
             item["summary"] = item["summary"][:summary_budget]
         encoded = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
     if len(encoded) > max_chars:
+        # Section role is repeated across chunks; section_index/title already preserve grouping.
+        for item in compact:
+            if item.get("section_role"):
+                truncated = True
+            item.pop("section_role", None)
+        encoded = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+    if len(encoded) > max_chars:
+        # Keep the claim and verbatim source quote, but omit the redundant claim category.
+        for item in compact:
+            for claim in item["claims"]:
+                if "kind" in claim:
+                    truncated = True
+                claim.pop("kind", None)
+                for evidence in claim["evidence"]:
+                    evidence["quote"] = evidence["quote"][:120]
+        encoded = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+    if len(encoded) > max_chars:
         # At very small budgets, shorten prose fields while keeping chunk identity and evidence anchors.
         for item in compact:
             item["title"] = item["title"][:48]
