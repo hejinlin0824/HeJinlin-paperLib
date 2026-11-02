@@ -21,7 +21,7 @@ SYNTHESIS_CHARS = 24000
 MAX_RELATIONS = 20
 
 CHUNK_SYSTEM = """你是严谨的学术论文分块分析员。当前输入只是论文的一个连续章节片段，不能假定已看到全文。
-输出合法 JSON：{"summary":"本片段的学术内容摘要","claims":[{"claim":"明确主张","kind":"definition|condition|theorem|method|finding|limitation|other","evidence":[{"block_id":1,"quote":"原文连续逐字摘录"}]}],"argument_steps":["论证步骤/前提/推导/反例，按原文顺序"],"candidate_contributions":["可能属于作者贡献的内容"],"open_questions":["片段不足以判断的事项"]}。
+输出合法 JSON：{"section_role":"abstract|introduction|related_work|preliminaries|method|theory|experiment|discussion|conclusion|other","summary":"本片段的学术内容摘要","claims":[{"claim":"明确主张","kind":"definition|condition|theorem|method|finding|limitation|other","evidence":[{"block_id":1,"quote":"原文连续逐字摘录"}]}],"argument_steps":["论证步骤/前提/推导/反例，按原文顺序"],"candidate_contributions":["可能属于作者贡献的内容"],"open_questions":["片段不足以判断的事项"]}。
 优先保留定义、假设、必要条件、充分条件、定理、引理、证明、反例、边界案例、限制和关键结果。每个 evidence 必须逐字复制输入块，block_id 必须真实。不要把例子当定义、把案例判据升级为普遍定义，也不要推断未提供的内容。"""
 
 SYNTHESIS_SYSTEM = """你是学术论文理解专家。依据多个章节分块摘要、论证步骤和逐字证据，综合整篇论文。
@@ -127,7 +127,8 @@ def _validate_logic(payload: dict, block_map: dict[int, str]) -> list[str]:
         except (TypeError, ValueError, AttributeError):
             bid = -1
         quote = str((rel.get("evidence") or {}).get("quote") or "").strip()
-        sources = [str(x) for x in rel.get("source_ids", [])]
+        raw_sources = rel.get("source_ids", [])
+        sources = [str(x) for x in raw_sources] if isinstance(raw_sources, list) else []
         target = str(rel.get("target_id") or "")
         kind = str(rel.get("relation_type") or "").upper()
         valid_shape = kind in allowed and target in nodes and bool(sources) and all(x in nodes for x in sources)
@@ -199,7 +200,8 @@ async def run_understanding(draft_id: str) -> None:
                 "completed_chunks": len(notes), "failed_chunks": len(failed_chunks),
                 "total_blocks": total_blocks, "total_chars": total_chars,
                 "processed_chars": processed_chars,
-                "input_coverage": round(processed_chars / max(1, total_chars), 4),
+                "chunked_chars": total_chunk_chars,
+                "input_coverage": round(processed_chars / max(1, total_chunk_chars), 4),
                 "complete": not failed_chunks and processed_chars >= total_chunk_chars,
             }
             payload["chunk_notes"] = notes
@@ -216,10 +218,11 @@ async def run_understanding(draft_id: str) -> None:
                                     "coverage_status": "failed"})
                 continue
             section_map.append({"title": section["title"], "section_role": "other",
+                                "section_role": group[0].get("section_role", "other"),
                                 "summary": " ".join(str(n.get("summary") or "") for n in group)[:1200],
                                 "claims": [c for n in group for c in n.get("claims", [])][:20],
                                 "argument_steps": [a for n in group for a in n.get("argument_steps", [])][:30],
-                                "coverage_status": "complete" if all(c not in failed_chunks for c in []) and len(group) == sum(1 for x in chunks if x["section_index"] == si) else "partial"})
+                                "coverage_status": "complete" if len(group) == sum(1 for x in chunks if x["section_index"] == si) else "partial"})
         payload["section_map"] = section_map
         payload["progress_stage"] = "paper_synthesis"
         legacy._persist_progress(draft_id, model_name, payload, warnings)
