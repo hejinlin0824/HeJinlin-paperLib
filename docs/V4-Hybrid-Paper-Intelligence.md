@@ -60,6 +60,23 @@ A dedicated vector database can be introduced later if measured corpus size requ
 - Dense embeddings are optional; no network request occurs during lexical indexing/search.
 - The UI/API confirmation flow remains separate from formal graph import.
 
+## Harness 论文质量评测
+
+先在 V4 工作台生成一份新档案，再从 V4 任务列表复制 draft ID。执行只读评测：
+
+```powershell
+.\\.venv\\Scripts\\python.exe tools\\evaluate_paper_understanding.py --draft-id YOUR_DRAFT_ID
+```
+
+评测报告包含：
+- `concept_recall_proxy`：目标概念的词面覆盖代理指标，不是语义召回率；
+- `evidence_exact_match_rate`：节点/关系引文在原始 Block 中逐字定位的比例；
+- `joint_sufficiency_hyperedge_shape_rate`：共同充分关系是否至少有两个前提；
+- `unverified_edge_count`：尚未完成语义核验的关系数；
+- 必须人工核对的负面案例清单。
+
+要建立真正的 precision/recall 基准，仍需人工为 Harness PDF 标注 gold 节点、关系方向和逐字证据，再将 gold 数据扩展为可机器比对的标注集。当前 fixture 是验收规格，不伪装成完整金标准。
+
 ## Known limitations
 
 - Regex academic candidates are intentionally conservative and are not a substitute for
