@@ -29,14 +29,18 @@ def create_draft(paper_id: str) -> dict:
 
 
 def list_drafts(paper_id: str | None = None) -> list[dict]:
-    return legacy.list_drafts(paper_id)
+    return [item for item in legacy.list_drafts(paper_id) if item.get("version") == VERSION]
 
 
 def get_draft(draft_id: str) -> dict | None:
-    return legacy.get_draft(draft_id)
+    item = legacy.get_draft(draft_id)
+    return item if item and item.get("version") == VERSION else None
 
 
 def update_review(draft_id: str, payload: dict, status: str | None = None) -> dict:
+    current = row("SELECT version FROM kg_understanding_drafts WHERE id=?", (draft_id,))
+    if not current or current.get("version") != VERSION:
+        raise ValueError("V4 理解档案不存在或版本不匹配")
     return legacy.update_review(draft_id, payload, status)
 
 
