@@ -11,6 +11,8 @@ const current = ref(null)
 const busy = ref(false)
 const edited = ref(false)
 const payload = ref(null)
+const jsonText = ref('')
+const jsonValid = ref(true)
 
 const selectedDraft = computed(() => drafts.value.find(x => x.id === selectedId.value))
 const contributions = computed(() => payload.value?.contributions || [])
@@ -20,6 +22,15 @@ const paperName = (id) => {
   return p?.title_zh || p?.title || id
 }
 const importanceLabel = (v) => ({core:'核心贡献',supporting:'支撑知识',context:'背景信息'}[v] || v || '未分类')
+function nodeDepth(id) {
+  const byId = new Map(contributions.value.map(n => [n.id, n]))
+  const seen = new Set([id])
+  let node = byId.get(id), depth = 0
+  while (node?.parent_id && byId.has(node.parent_id) && depth < 8 && !seen.has(node.parent_id)) {
+    seen.add(node.parent_id); depth++; node = byId.get(node.parent_id)
+  }
+  return depth
+}
 
 async function refresh() {
   const [p, d] = await Promise.all([api.papers(), api.kgV3Drafts()])
@@ -30,6 +41,8 @@ async function openDraft(id) {
   selectedId.value = id
   current.value = await api.kgV3Draft(id)
   payload.value = JSON.parse(JSON.stringify(current.value.payload || {}))
+  jsonText.value = JSON.stringify(payload.value, null, 2)
+  jsonValid.value = true
   edited.value = false
 }
 async function start() {
@@ -56,6 +69,8 @@ async function save() {
   try {
     current.value = await api.kgV3Save(current.value.id, payload.value)
     payload.value = JSON.parse(JSON.stringify(current.value.payload || {}))
+    jsonText.value = JSON.stringify(payload.value, null, 2)
+    jsonValid.value = true
     edited.value = false
     await refresh()
     toast('审阅修改已保存；尚未写入正式知识图谱')
@@ -68,12 +83,19 @@ async function review(status) {
   try {
     current.value = await api.kgV3Review(current.value.id, status, payload.value)
     payload.value = JSON.parse(JSON.stringify(current.value.payload || {}))
+    jsonText.value = JSON.stringify(payload.value, null, 2)
+    jsonValid.value = true
+    edited.value = false
     await refresh()
     toast(status === 'approved' ? '理解档案已确认（仍未写入旧图谱）' : '理解档案已驳回；旧图谱不受影响')
   } catch (e) { toast(e.message || '审核失败') }
   finally { busy.value = false }
 }
-function markEdited() { edited.value = true }
+function parseEditor() {
+  edited.value = true
+  try { payload.value = JSON.parse(jsonText.value); jsonValid.value = true }
+  catch { jsonValid.value = false }
+}
 
 onMounted(async () => {
   try { await refresh() } catch (e) { toast(e.message || '加载失败') }
@@ -134,7 +156,7 @@ onMounted(async () => {
           <section class="block">
             <div class="section-title"><h3>贡献树</h3><span>{{ contributions.length }} 个节点</span></div>
             <p class="hint">核心贡献是作者真正提出的内容；支撑知识包括定义、条件、证明、模块和关键结果；背景信息默认不进入核心图谱。</p>
-            <article v-for="node in contributions" :key="node.id" class="contribution">
+            <article v-for="node in contributions" :key="node.id" class="contribution" :style="{ marginLeft: (nodeDepth(node.id) * 18) + 'px' }">
               <div class="node-title">
                 <strong>{{ node.title }}</strong>
                 <span :class="['tag',node.importance]">{{ importanceLabel(node.importance) }}</span>
@@ -184,11 +206,12 @@ onMounted(async () => {
           <section class="block">
             <div class="section-title"><h3>人工修订</h3><span>编辑 JSON 后保存</span></div>
             <p class="hint">你可以调整贡献名称、层级、描述、证据和关系。保存只更新 v3 草稿，不写入 v2 正式图谱。</p>
-            <textarea :value="JSON.stringify(payload,null,2)" @input="e=>{try{payload=JSON.parse(e.target.value);markEdited()}catch{edited=true}}" spellcheck="false"></textarea>
+            <textarea v-model="jsonText" @input="parseEditor" spellcheck="false"></textarea>
+            <p v-if="!jsonValid" class="editor-error">JSON 格式错误，请修正后再保存或确认。</p>
             <div class="actions">
-              <button :disabled="busy || !edited" @click="save">保存修改</button>
-              <button class="approve" :disabled="busy || current.status==='running'" @click="review('approved')">确认理解档案</button>
-              <button class="reject" :disabled="busy || current.status==='running'" @click="review('rejected')">驳回</button>
+              <button :disabled="busy || !edited || !jsonValid" @click="save">保存修改</button>
+              <button class="approve" :disabled="busy || current.status==='running' || !jsonValid" @click="review('approved')">确认理解档案</button>
+              <button class="reject" :disabled="busy || current.status==='running' || !jsonValid" @click="review('rejected')">驳回</button>
             </div>
             <p class="hint">确认仅表示你认可论文理解结果。正式图谱写入/转换是后续独立步骤，不会在此处自动发生。</p>
           </section>
@@ -203,6 +226,6 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.understanding-page{max-width:1500px;margin:0 auto;padding:30px 34px 60px;color:#263445}.hero{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;margin-bottom:24px}.hero h1{font-size:28px;margin:8px 0}.hero p,.muted,.hint{color:#718096}.eyebrow{font-size:11px;letter-spacing:.13em;color:#718096;font-weight:700}.hero a{color:#456b91;text-decoration:none}.start-card,.draft-list,.detail,.empty-detail{background:#fff;border:1px solid #e3e9ef;border-radius:12px;padding:20px}.start-card{margin-bottom:18px}.start-card label,.summary-grid label{display:block;font-size:12px;color:#718096;margin-bottom:8px}.start-row{display:flex;gap:10px;margin-bottom:10px}.start-row select{min-width:300px;flex:1}.start-row select,button,textarea{font:inherit}.start-row select{border:1px solid #d6dee7;border-radius:7px;padding:9px}.start-row button,.actions button{border:0;border-radius:7px;background:#315f87;color:#fff;padding:9px 15px;cursor:pointer}.button:disabled,button:disabled{opacity:.5;cursor:not-allowed}.secondary{background:#edf2f7!important;color:#40566d!important}.workspace{display:grid;grid-template-columns:290px minmax(0,1fr);gap:18px;align-items:start}.draft-list{position:sticky;top:18px}.draft-list h2,.detail h2{margin:0 0 14px;font-size:18px}.draft-item{display:block;width:100%;text-align:left;background:#f7f9fb;border:1px solid #e6ebf0;border-radius:8px;padding:11px;margin:8px 0;color:#34465a}.draft-item.active{border-color:#7898b6;background:#edf4fa}.draft-item strong,.draft-item span{display:block}.draft-item span{font-size:11px;color:#7b8794;margin-top:5px}.detail-head{display:flex;justify-content:space-between;gap:18px;border-bottom:1px solid #e7edf2;padding-bottom:15px}.detail-head p{font-size:13px;color:#718096}.summary-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin:18px 0}.summary-grid article,.contribution,.compact,.relation{border:1px solid #e7edf2;border-radius:8px;padding:13px;margin:8px 0}.summary-grid article{background:#f8fafc}.summary-grid p,.contribution p,.compact p,.relation p{margin:5px 0;color:#526174;font-size:13px;line-height:1.6}.block{margin-top:22px}.section-title{display:flex;align-items:center;justify-content:space-between}.section-title h3{margin:0;font-size:16px}.section-title span,.kind{font-size:11px;color:#7b8794}.hint{font-size:12px;line-height:1.6}.node-title{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.tag{font-size:11px;padding:3px 7px;border-radius:99px;background:#edf2f7;color:#526174}.tag.core,.tag.entailed{background:#e4f2ea;color:#286344}.tag.supporting{background:#e9f0f8;color:#3f6387}.tag.context,.tag.uncertain{background:#f2f0e8;color:#796b3d}.tag.not_entailed,.tag.rejected{background:#f8e9e8;color:#9a4943}.evidence{display:block;color:#66788a;background:#f7f9fb;padding:7px 9px;border-radius:5px;margin-top:7px;font-size:11px;line-height:1.5}.compact{display:grid;grid-template-columns:minmax(140px,220px) auto;gap:5px 12px}.compact p,.compact small{grid-column:1/-1}.relation{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.relation p,.relation small{width:100%}.predicate{font-size:11px;color:#416887;background:#edf4fa;padding:4px 7px;border-radius:5px}.detail textarea{width:100%;min-height:330px;border:1px solid #dce4eb;border-radius:8px;padding:12px;font:12px/1.55 ui-monospace,Consolas,monospace;color:#34465a;resize:vertical}.actions{display:flex;gap:9px;margin-top:12px}.actions .approve{background:#347653}.actions .reject{background:#a14e49}.warnings{background:#fffaf1;border:1px solid #f1dfb9;border-radius:8px;padding:12px}.notice{padding:14px;background:#edf4fa;border-radius:8px;margin:15px 0}.empty-detail{min-height:300px;display:grid;place-content:center;text-align:center;color:#718096}
+.understanding-page{max-width:1500px;margin:0 auto;padding:30px 34px 60px;color:#263445}.hero{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;margin-bottom:24px}.hero h1{font-size:28px;margin:8px 0}.hero p,.muted,.hint{color:#718096}.eyebrow{font-size:11px;letter-spacing:.13em;color:#718096;font-weight:700}.hero a{color:#456b91;text-decoration:none}.start-card,.draft-list,.detail,.empty-detail{background:#fff;border:1px solid #e3e9ef;border-radius:12px;padding:20px}.start-card{margin-bottom:18px}.start-card label,.summary-grid label{display:block;font-size:12px;color:#718096;margin-bottom:8px}.start-row{display:flex;gap:10px;margin-bottom:10px}.start-row select{min-width:300px;flex:1}.start-row select,button,textarea{font:inherit}.start-row select{border:1px solid #d6dee7;border-radius:7px;padding:9px}.start-row button,.actions button{border:0;border-radius:7px;background:#315f87;color:#fff;padding:9px 15px;cursor:pointer}.button:disabled,button:disabled{opacity:.5;cursor:not-allowed}.secondary{background:#edf2f7!important;color:#40566d!important}.workspace{display:grid;grid-template-columns:290px minmax(0,1fr);gap:18px;align-items:start}.draft-list{position:sticky;top:18px}.draft-list h2,.detail h2{margin:0 0 14px;font-size:18px}.draft-item{display:block;width:100%;text-align:left;background:#f7f9fb;border:1px solid #e6ebf0;border-radius:8px;padding:11px;margin:8px 0;color:#34465a}.draft-item.active{border-color:#7898b6;background:#edf4fa}.draft-item strong,.draft-item span{display:block}.draft-item span{font-size:11px;color:#7b8794;margin-top:5px}.detail-head{display:flex;justify-content:space-between;gap:18px;border-bottom:1px solid #e7edf2;padding-bottom:15px}.detail-head p{font-size:13px;color:#718096}.summary-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin:18px 0}.summary-grid article,.contribution,.compact,.relation{border:1px solid #e7edf2;border-radius:8px;padding:13px;margin:8px 0}.summary-grid article{background:#f8fafc}.summary-grid p,.contribution p,.compact p,.relation p{margin:5px 0;color:#526174;font-size:13px;line-height:1.6}.block{margin-top:22px}.section-title{display:flex;align-items:center;justify-content:space-between}.section-title h3{margin:0;font-size:16px}.section-title span,.kind{font-size:11px;color:#7b8794}.hint{font-size:12px;line-height:1.6}.node-title{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.tag{font-size:11px;padding:3px 7px;border-radius:99px;background:#edf2f7;color:#526174}.tag.core,.tag.entailed{background:#e4f2ea;color:#286344}.tag.supporting{background:#e9f0f8;color:#3f6387}.tag.context,.tag.uncertain{background:#f2f0e8;color:#796b3d}.tag.not_entailed,.tag.rejected{background:#f8e9e8;color:#9a4943}.evidence{display:block;color:#66788a;background:#f7f9fb;padding:7px 9px;border-radius:5px;margin-top:7px;font-size:11px;line-height:1.5}.compact{display:grid;grid-template-columns:minmax(140px,220px) auto;gap:5px 12px}.compact p,.compact small{grid-column:1/-1}.relation{display:flex;align-items:center;gap:9px;flex-wrap:wrap}.relation p,.relation small{width:100%}.predicate{font-size:11px;color:#416887;background:#edf4fa;padding:4px 7px;border-radius:5px}.editor-error{color:#a14e49;font-size:12px}.detail textarea{width:100%;min-height:330px;border:1px solid #dce4eb;border-radius:8px;padding:12px;font:12px/1.55 ui-monospace,Consolas,monospace;color:#34465a;resize:vertical}.actions{display:flex;gap:9px;margin-top:12px}.actions .approve{background:#347653}.actions .reject{background:#a14e49}.warnings{background:#fffaf1;border:1px solid #f1dfb9;border-radius:8px;padding:12px}.notice{padding:14px;background:#edf4fa;border-radius:8px;margin:15px 0}.empty-detail{min-height:300px;display:grid;place-content:center;text-align:center;color:#718096}
 @media(max-width:900px){.workspace{grid-template-columns:1fr}.draft-list{position:static}.summary-grid{grid-template-columns:1fr}.understanding-page{padding:18px}.start-row{flex-wrap:wrap}.start-row select{min-width:100%}}
 </style>
