@@ -88,7 +88,7 @@ def _clean(text: str) -> str:
     return t.replace("\ufffd", "").strip()
 
 
-async def chat(info: dict, messages: list, max_tokens: int | None = None) -> str:
+async def chat(info: dict, messages: list, max_tokens: int | None = None,\n               timeout_seconds: int = 180, retries: int = 3) -> str:
     """调用 OpenAI 兼容 /chat/completions。
 
     某些推理模型会把 max_tokens 预算优先用于 reasoning，导致 message.content 为空。
@@ -106,12 +106,12 @@ async def chat(info: dict, messages: list, max_tokens: int | None = None) -> str
         headers["Authorization"] = f"Bearer {info['api_key']}"
     last_err = None
     retry_without_token_limit = False
-    for attempt in range(3):
+    retries = max(1, int(retries))\n    for attempt in range(retries):
         request_body = dict(body)
         if retry_without_token_limit:
             request_body.pop("max_tokens", None)
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(180)) as c:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds)) as c:
                 r = await c.post(f"{info['base_url']}/chat/completions",
                                  headers=headers, json=request_body)
             if r.status_code in (429, 500, 502, 503, 504):
