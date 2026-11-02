@@ -22,7 +22,16 @@ def inspect_library(root: Path = ROOT) -> dict:
     data_dir = root / "data"
     db_path = data_dir / "library.db"
     papers_dir = data_dir / "papers"
-    pdfs = list(papers_dir.rglob("*.pdf")) + list(papers_dir.rglob("*.PDF")) if papers_dir.exists() else []
+    # Windows globbing is case-insensitive: "*.pdf" and "*.PDF" can return the
+    # same path twice. Count canonical paths once on every platform.
+    pdfs_by_path = {}
+    if papers_dir.exists():
+        for pattern in ("*.pdf", "*.PDF"):
+            for path in papers_dir.rglob(pattern):
+                if path.is_file():
+                    canonical = path.resolve()
+                    pdfs_by_path[str(canonical).casefold()] = canonical
+    pdfs = list(pdfs_by_path.values())
     paper_dirs = [p for p in papers_dir.iterdir() if p.is_dir()] if papers_dir.exists() else []
 
     result = {

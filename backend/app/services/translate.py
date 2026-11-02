@@ -89,7 +89,11 @@ def _clean(text: str) -> str:
 
 
 async def chat(info: dict, messages: list, max_tokens: int | None = None) -> str:
-    """调用 OpenAI 兼容 /chat/completions，带重试。"""
+    """调用 OpenAI 兼容 /chat/completions。
+
+    某些推理模型会把 max_tokens 预算优先用于 reasoning，导致 message.content 为空。
+    首次受限请求返回空内容时，后续重试自动移除 max_tokens，避免三次重复同一个失败请求。
+    """
     if info["provider"] == "mock":
         await asyncio.sleep(0.05)
         return _mock(messages[-1]["content"])
@@ -101,27 +105,53 @@ async def chat(info: dict, messages: list, max_tokens: int | None = None) -> str
     if info["api_key"]:
         headers["Authorization"] = f"Bearer {info['api_key']}"
     last_err = None
+    retry_without_token_limit = False
     for attempt in range(3):
+        request_body = dict(body)
+        if retry_without_token_limit:
+            request_body.pop("max_tokens", None)
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(180)) as c:
                 r = await c.post(f"{info['base_url']}/chat/completions",
-                                 headers=headers, json=body)
+                                 headers=headers, json=request_body)
             if r.status_code in (429, 500, 502, 503, 504):
-                last_err = RuntimeError(f"HTTP {r.status_code}: {r.text[:200]}")
+                last_err = RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
             else:
                 r.raise_for_status()
                 data = r.json()
-                msg = data["choices"][0]["message"]
-                content = (msg.get("content") or "").strip()
-                if not content:
-                    # 思考型模型可能把 max_tokens 耗在推理上
-                    last_err = RuntimeError("模型返回了空内容（思考型模型？请勿限制 max_tokens）")
+                choices = data.get("choices") or []
+                if not choices:
+                    last_err = RuntimeError(
+                        f"模型响应缺少 choices；响应字段={list(data.keys())[:12]}")
                 else:
-                    return _clean(content)
+                    choice = choices[0] or {}
+                    msg = choice.get("message") or {}
+                    raw_content = msg.get("content")
+                    if isinstance(raw_content, list):
+                        content = "".join(
+                            str(part.get("text") or "") if isinstance(part, dict) else str(part)
+                            for part in raw_content
+                        ).strip()
+                    else:
+                        content = str(raw_content or "").strip()
+                    if content:
+                        return _clean(content)
+                    reasoning = msg.get("reasoning_content") or msg.get("reasoning") or ""
+                    usage = data.get("usage") or {}
+                    last_err = RuntimeError(
+                        "模型返回空正文；"
+                        f"finish_reason={choice.get('finish_reason')!r}, "
+                        f"reasoning_chars={len(str(reasoning))}, "
+                        f"completion_tokens={usage.get('completion_tokens')}, "
+                        f"response_fields={list(data.keys())[:12]}"
+                    )
+                    if "max_tokens" in request_body:
+                        retry_without_token_limit = True
         except Exception as e:  # noqa: BLE001
             last_err = e
-        await asyncio.sleep(2 * (attempt + 1))
-    raise RuntimeError(f"翻译请求失败（已重试3次）：{last_err}")
+        if attempt < 2:
+            await asyncio.sleep(2 * (attempt + 1))
+    raise RuntimeError(f"模型请求失败（已尝试3次）：{last_err}")
 
 
 def _glossary_text() -> str:

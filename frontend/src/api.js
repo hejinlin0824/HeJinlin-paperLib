@@ -87,6 +87,12 @@ export const api = {
   kgRebuild: () => request('/api/knowledge-graph/rebuild', { method: 'POST' }),
   kgRetryJob: (jid) => request(`/api/knowledge-graph/jobs/${jid}/retry`, { method: 'POST' }),
   kgTranslateNames: () => request('/api/knowledge-graph/translate-names', { method: 'POST' }),
+  // V3：独立论文理解草稿，不触碰旧知识图谱
+  kgV3Drafts: (paperId) => request('/api/knowledge-graph/v3/drafts' + (paperId ? '?paper_id=' + encodeURIComponent(paperId) : '')),
+  kgV3Draft: (id) => request(`/api/knowledge-graph/v3/drafts/${id}`),
+  kgV3Understand: (paperId) => request(`/api/knowledge-graph/v3/papers/${paperId}/understand`, { method: 'POST' }),
+  kgV3Save: (id, payload) => request(`/api/knowledge-graph/v3/drafts/${id}`, { method: 'PUT', body: { payload } }),
+  kgV3Review: (id, status, payload) => request(`/api/knowledge-graph/v3/drafts/${id}/review`, { method: 'POST', body: { status, payload } }),
 }
 
 export default api

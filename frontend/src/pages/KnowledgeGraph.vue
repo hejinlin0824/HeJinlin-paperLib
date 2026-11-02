@@ -605,6 +605,7 @@ onBeforeUnmount(() => {
           <button :class="{ on: view === 'topics' }" @click="switchView('topics')">研究主题</button>
           <button :class="{ on: view === 'global' }" @click="switchView('global')">关系探索</button>
         </div>
+        <a class="btn sm" href="/kg-understanding" title="先生成论文理解档案与贡献树">论文理解 V3</a>
         <button class="btn sm" @click="startRebuild" title="为还没有图谱数据的论文自动抽取">⚗ 抽取缺失论文</button>
       </div>
     </div>

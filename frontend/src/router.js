@@ -8,6 +8,7 @@ export default createRouter({
     { path: '/reader/:id', name: 'reader', component: () => import('./pages/Reader.vue') },
     { path: '/log', name: 'log', component: () => import('./pages/LogTable.vue') },
     { path: '/graph', name: 'graph', component: () => import('./pages/KnowledgeGraph.vue') },
+    { path: '/kg-understanding', name: 'kg-understanding', component: () => import('./pages/PaperUnderstanding.vue') },
     { path: '/settings', name: 'settings', component: () => import('./pages/Settings.vue') },
   ],
 })
