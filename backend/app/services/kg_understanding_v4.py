@@ -110,10 +110,12 @@ async def run_understanding(draft_id: str) -> None:
         except Exception as exc:
             warnings.append(f"本地检索索引建立失败，继续论文理解：{type(exc).__name__}")
         try:
-            candidates = intelligence.extract_structure_candidates(draft["paper_id"])["candidates"]
+            candidate_result = intelligence.extract_structure_candidates(draft["paper_id"])
+            candidates = candidate_result["candidates"]
+            warnings.extend(candidate_result.get("warnings") or [])
         except Exception as exc:
             candidates = []
-            warnings.append(f"GLiNER/规则候选提取不可用，继续主流程：{type(exc).__name__}")
+            warnings.append(f"规则候选提取不可用，继续主流程：{type(exc).__name__}")
         payload["pipeline"]["rule_candidates"] = len(candidates)
         sections, block_map = v31._load_sections(draft["paper_id"])
         chunks = v31._make_chunks(sections)
