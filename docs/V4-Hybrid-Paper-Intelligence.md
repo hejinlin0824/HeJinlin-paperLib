@@ -26,6 +26,16 @@ or V3/V3.1 drafts. New V4 understanding drafts are versioned as 4.0 in the isola
    cases. Automated tests verify pipeline contracts; semantic precision/recall still
    requires a human-checked gold annotation.
 
+## 模型选型边界
+
+- **BGE-M3**：用于中英混合的 Block 级语义检索；这是 V4 当前可选 dense retrieval 后端。
+- **GLiNER**：用于可配置标签的实体/术语候选发现；输出必须回链到原始 Block，不能直接当作理论关系。
+- **SciBERT**：是科学文本预训练编码器，不是开箱即用的 theorem/assumption 分类器。若没有人工标注训练集和任务头，直接把它放入线上推理只会增加依赖，不能可靠地产生结构标签，因此 V4 暂不把它作为必需运行时组件。
+- **SPECTER2**：主要面向论文级学术文档表示和相关论文检索，不是段落级逻辑解析器。未来可用于跨论文推荐/研究主题聚类；当前 V4 先用 BGE-M3 解决中英混合 Block 检索，避免重复维护两个 embedding 空间。
+- **Reranker**：可在建立标注查询集后评估 BGE reranker；当前 RRF 排序先提供稳定、无额外服务的 baseline。
+
+这些是有意的工程取舍：专业模型应解决明确任务，而不是仅仅因为“学术模型”这个标签就全部部署。
+
 ## API
 
 - `POST /api/knowledge-graph/v4/papers/{paper_id}/index` — build local lexical index.
