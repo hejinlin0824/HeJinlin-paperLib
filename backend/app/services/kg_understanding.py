@@ -84,8 +84,10 @@ def _sections(pid: str) -> list[dict]:
     for b in blocks:
         s = starts.get(b["id"])
         if s:
-            current = {"title": s.get("title_en") or s.get("title") or "Untitled section",
-                       "skip": bool(s.get("skip")), "blocks": [], "chars": 0}
+            title = s.get("title_en") or s.get("title") or "Untitled section"
+            is_backmatter = bool(re.search(r"references|bibliography|acknowledg(e)?ments|参考文献|致谢", title, re.I))
+            current = {"title": title, "skip": bool(s.get("skip")) or is_backmatter,
+                       "blocks": [], "chars": 0}
             out.append(current)
         if current is None or current["skip"] or b["type"] not in ("text","heading","list","table"):
             continue
@@ -128,6 +130,44 @@ def _validate_evidence(payload: dict, block_map: dict[int,str]) -> list[str]:
     payload["method_architecture"] = check_items(payload.get("method_architecture"), "方法结构")
     payload["key_findings"] = check_items(payload.get("key_findings"), "结论")
     return warnings
+
+def _normalise_contributions(payload: dict) -> list[str]:
+    warnings = []
+    raw = payload.get("contributions", [])
+    valid, seen = [], set()
+    allowed_importance = {"core", "supporting", "context"}
+    for node in raw if isinstance(raw, list) else []:
+        if not isinstance(node, dict):
+            continue
+        node_id = str(node.get("id") or "").strip()
+        if not node_id or node_id in seen:
+            warnings.append("贡献树存在空 ID 或重复 ID，重复节点已移除")
+            continue
+        seen.add(node_id)
+        if node.get("importance") not in allowed_importance:
+            node["importance"] = "supporting"
+        node["id"] = node_id
+        valid.append(node)
+    ids = {n["id"] for n in valid}
+    for node in valid:
+        parent = node.get("parent_id")
+        if parent and (str(parent) not in ids or str(parent) == node["id"]):
+            node["parent_id"] = None
+            warnings.append(f"贡献节点 {node['id']} 的父节点无效，已置为根节点")
+    by_id = {n["id"]: n for n in valid}
+    for node in valid:
+        visited, cursor = set(), node["id"]
+        while cursor and cursor in by_id:
+            if cursor in visited:
+                node["parent_id"] = None
+                warnings.append("贡献树检测到循环父子关系，已断开一条边")
+                break
+            visited.add(cursor)
+            parent = by_id[cursor].get("parent_id")
+            cursor = str(parent) if parent else ""
+    payload["contributions"] = valid[:80]
+    return warnings
+
 
 def _normalise_relations(payload: dict, block_map: dict[int,str]) -> list[str]:
     warnings = []
@@ -209,6 +249,9 @@ async def run_understanding(draft_id: str) -> None:
         payload["section_map"] = section_notes
         payload["relations"] = []
         warnings.extend(_validate_evidence(payload,_evidence_index(sections)))
+        warnings.extend(_normalise_contributions(payload))
+        if payload.get("paper_type") not in {"theory","algorithm","system","empirical","survey","other"}:
+            payload["paper_type"] = "other"
         # Candidate relations are generated only between contribution-tree nodes,
         # never by flattening arbitrary section mentions.
         nodes = payload["contributions"]
