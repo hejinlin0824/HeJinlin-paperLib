@@ -40,8 +40,8 @@ argument_map:[{claim, premises:[...], conclusion, evidence:[{block_id,quote}]}].
 理论论文必须分别识别条件，不得把多个条件合并成一个空泛节点。必要条件与充分条件必须区分；多个条件共同充分时，必须用一个多前提逻辑关系表达，不能声称任一单条件单独充分。定义、操作判据、案例和非必要属性必须分开建模。每项关键主张需证据；不确定就写入 uncertainties。"""
 
 LOGIC_BACKFILL_SYSTEM = """你是形式化论证审查员。仅根据给出的理论论文证据，提取明确表达的逻辑关系。
-输出 JSON：{"theory_logic":[{"id":"logic1","relation_type":"HAS_NECESSARY_CONDITION|JOINTLY_SUFFICIENT_FOR|EQUIVALENT_TO|IMPLIES|NOT_REQUIRED|SPECIALIZATION_OF|EXCLUDES|CONTRADICTS","source_ids":["节点ID"],"target_id":"节点ID","statement":"中文说明","evidence":{"block_id":1,"quote":"原文连续逐字摘录"}}]}。
-JOINTLY_SUFFICIENT_FOR 的 source_ids 必须包含两个或以上条件；必要条件关系是单个条件到被定义概念。不得把“由...组成”自动当作充分性证明。NOT_REQUIRED 用于作者明确说某属性不是必要条件。证据必须逐字来自输入，证据不足则不输出。"""
+输出 JSON：{"theory_logic":[{"id":"logic1","relation_type":"NECESSARY_FOR|JOINTLY_SUFFICIENT_FOR|EQUIVALENT_TO|IMPLIES|NOT_REQUIRED|SPECIALIZATION_OF|EXCLUDES|CONTRADICTS","source_ids":["节点ID"],"target_id":"节点ID","statement":"中文说明","evidence":{"block_id":1,"quote":"原文连续逐字摘录"}}]}。
+JOINTLY_SUFFICIENT_FOR 的 source_ids 必须包含两个或以上条件；必要条件关系使用 NECESSARY_FOR，source 是单个条件，target 是被定义概念。不得把“由...组成”自动当作充分性证明。NOT_REQUIRED 用于作者明确说某属性不是必要条件。证据必须逐字来自输入，证据不足则不输出。"""
 
 LOGIC_VERIFY_SYSTEM = """你是形式化逻辑关系验证员。审查给定 source_ids（可能多个前提）到 target_id 的关系是否被 quote 直接支持。
 只输出 JSON：{"verdict":"entailed|not_entailed|uncertain","reason":"中文理由"}。
@@ -121,7 +121,7 @@ def _chunk_prompt(title: str, chunk: dict) -> str:
 def _validate_logic(payload: dict, block_map: dict[int, str]) -> list[str]:
     warnings, accepted = [], []
     nodes = {str(n.get("id")) for n in payload.get("contributions", []) if n.get("id")}
-    allowed = {"HAS_NECESSARY_CONDITION", "JOINTLY_SUFFICIENT_FOR", "EQUIVALENT_TO",
+    allowed = {"HAS_NECESSARY_CONDITION", "NECESSARY_FOR", "JOINTLY_SUFFICIENT_FOR", "EQUIVALENT_TO",
                "IMPLIES", "NOT_REQUIRED", "SPECIALIZATION_OF", "EXCLUDES", "CONTRADICTS"}
     for rel in payload.get("theory_logic", []) if isinstance(payload.get("theory_logic"), list) else []:
         if not isinstance(rel, dict):
@@ -221,8 +221,7 @@ async def run_understanding(draft_id: str) -> None:
                                     "summary": "本章分块分析失败，内容未能完整覆盖。", "claims": [],
                                     "coverage_status": "failed"})
                 continue
-            section_map.append({"title": section["title"], "section_role": "other",
-                                "section_role": group[0].get("section_role", "other"),
+            section_map.append({"title": section["title"], "section_role": group[0].get("section_role", "other"),
                                 "summary": " ".join(str(n.get("summary") or "") for n in group)[:1200],
                                 "claims": [c for n in group for c in n.get("claims", [])][:20],
                                 "argument_steps": [a for n in group for a in n.get("argument_steps", [])][:30],
@@ -288,16 +287,21 @@ async def run_understanding(draft_id: str) -> None:
         if payload.get("paper_type") == "theory" and payload.get("contributions"):
             payload["progress_stage"] = "theory_logic_backfill"
             legacy._persist_progress(draft_id, model_name, payload, warnings)
+            logic_notes = [{"section": n.get("title"),
+                "claims": (n.get("claims") or [])[:8],
+                "argument_steps": (n.get("argument_steps") or [])[:10]}
+                for n in notes]
             logic_source = json.dumps({"nodes": [{"id": n["id"], "title": n.get("title"),
                 "description": n.get("description"), "knowledge_role": n.get("knowledge_role")}
-                for n in payload["contributions"]], "notes": notes}, ensure_ascii=False)
+                for n in payload["contributions"]], "chunk_notes": logic_notes}, ensure_ascii=False)
             logic_result = legacy._json(await chat(info, [
                 {"role": "system", "content": LOGIC_BACKFILL_SYSTEM},
-                {"role": "user", "content": logic_source[:SYNTHESIS_CHARS]}
+                {"role": "user", "content": logic_source}
             ], max_tokens=2600))
             if logic_result:
                 payload["theory_logic"] = logic_result.get("theory_logic", [])
                 warnings.extend(_validate_logic(payload, block_map))
+        node_map = legacy.nodes_by_id(payload)
         # Verify theory hyperedges with a verifier that sees every premise together.
         payload["progress_stage"] = "theory_logic_verification"
         for logic in payload.get("theory_logic", []):
@@ -318,7 +322,6 @@ async def run_understanding(draft_id: str) -> None:
         # Verify ordinary directed relations independently.
         payload["progress_stage"] = "relation_verification"
         legacy._persist_progress(draft_id, model_name, payload, warnings)
-        node_map = legacy.nodes_by_id(payload)
         for rel in payload.get("relations", [])[:MAX_RELATIONS]:
             prompt = json.dumps({"source": node_map.get(rel["source_id"]),
                 "relation": rel["relation_type"], "target": node_map.get(rel["target_id"]),
