@@ -29,7 +29,8 @@ app.include_router(log.router)
 app.include_router(settings.router)
 app.include_router(dict.router)
 app.include_router(kg.router)
-app.include_router(kg_understanding.router)\napp.include_router(kg_intelligence_v4.router)
+app.include_router(kg_understanding.router)
+app.include_router(kg_intelligence_v4.router)
 
 # 只公开论文 PDF / 图片目录；绝不能把整个 data/ 挂载出去（其中包含 library.db 和密钥）。
 # URL 继续保持 /files/papers/{paper_id}/...，与阅读器现有链接兼容。
