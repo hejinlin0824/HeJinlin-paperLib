@@ -2,7 +2,10 @@
 param(
     [switch]$InstallDependencies,
     [switch]$SkipFrontend,
-    [switch]$LauncherPreflight
+    [switch]$LauncherPreflight,
+    [switch]$RunLiveModel,
+    [string]$PaperId,
+    [int]$LiveTimeoutMinutes = 30
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,6 +18,7 @@ $summaryPath = Join-Path $reportDir "summary.json"
 $results = [ordered]@{}
 $started = Get-Date
 $exitCode = 0
+$ownedServer = $null
 
 function Invoke-TestStep {
     param([string]$Name, [scriptblock]$Action)
@@ -99,6 +103,69 @@ try {
         }
     }
 
+    if ($RunLiveModel) {
+        if ([string]::IsNullOrWhiteSpace($PaperId)) {
+            throw "-RunLiveModel requires -PaperId <existing-paper-id>."
+        }
+        $api = "http://127.0.0.1:8300"
+        try {
+            $null = Invoke-RestMethod -Uri "$api/api/papers" -TimeoutSec 2
+        } catch {
+            Write-Host "Starting a temporary local API server for the live model test..."
+            $serverArgs = @("-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8300", "--app-dir", "backend")
+            $ownedServer = Start-Process -FilePath $python -ArgumentList $serverArgs -WorkingDirectory $root -PassThru -WindowStyle Hidden
+            $ready = $false
+            for ($i = 0; $i -lt 40; $i++) {
+                Start-Sleep -Seconds 1
+                if ($ownedServer.HasExited) { throw "Temporary API server exited before becoming ready." }
+                try {
+                    $null = Invoke-RestMethod -Uri "$api/api/papers" -TimeoutSec 2
+                    $ready = $true
+                    break
+                } catch { }
+            }
+            if (-not $ready) { throw "API server did not become ready at $api within 40 seconds." }
+        }
+
+        Invoke-TestStep "Live V4 model analysis" {
+            $encodedPaperId = [uri]::EscapeDataString($PaperId)
+            $startedTask = Invoke-RestMethod -Method Post -Uri "$api/api/knowledge-graph/v4/papers/$encodedPaperId/understand" -TimeoutSec 30
+            $draftId = $startedTask.draft.id
+            if ([string]::IsNullOrWhiteSpace($draftId)) { throw "V4 API did not return a draft ID." }
+            Write-Host "Live V4 draft: $draftId"
+            $deadline = (Get-Date).AddMinutes($LiveTimeoutMinutes)
+            $detail = $null
+            do {
+                Start-Sleep -Seconds 3
+                $detail = Invoke-RestMethod -Uri "$api/api/knowledge-graph/v4/drafts/$draftId" -TimeoutSec 10
+                if ($detail.status -in @("draft", "failed")) { break }
+                if ((Get-Date) -ge $deadline) { throw "Live model analysis timed out after $LiveTimeoutMinutes minutes. Draft $draftId is retained for inspection." }
+            } while ($true)
+
+            $payload = $detail.payload
+            $coverage = $payload.coverage
+            $pipeline = $payload.pipeline
+            $liveReport = [ordered]@{
+                status = $detail.status
+                draft_id = $draftId
+                model = $detail.model_name
+                chunk_count = $coverage.chunk_count
+                completed_chunks = $coverage.completed_chunks
+                failed_chunks = $coverage.failed_chunks
+                input_coverage = $coverage.input_coverage
+                llm_operations = $pipeline.llm_operations
+                chunk_batches = $pipeline.chunk_batches
+                synthesis_input = $pipeline.synthesis_input
+                timings_seconds = $pipeline.timings_seconds
+                warnings = $detail.warnings
+            }
+            $liveReport | ConvertTo-Json -Depth 10 | Set-Content -Path (Join-Path $reportDir "live-model-report.json") -Encoding UTF8
+            $results["Live V4 model analysis"] = $liveReport
+            if ($detail.status -ne "draft") { throw "Live V4 task finished with status '$($detail.status)'. Draft $draftId is retained." }
+            Write-Host "Live model report: $(Join-Path $reportDir 'live-model-report.json')"
+        }
+    }
+
     Write-Host ""
     Write-Host "All requested checks passed." -ForegroundColor Green
 }
@@ -108,10 +175,13 @@ catch {
     Write-Host "[FAIL] $($_.Exception.Message)" -ForegroundColor Red
 }
 finally {
+    if ($ownedServer -and -not $ownedServer.HasExited) {
+        Stop-Process -Id $ownedServer.Id -Force -ErrorAction SilentlyContinue
+    }
     $finished = Get-Date
     $summary = [ordered]@{
         project = "HeJinlin-paperLib"
-        test_scope = "offline regression and frontend build; no real model API calls"
+        test_scope = if ($RunLiveModel) { "offline regression, frontend build, and explicitly requested live model analysis" } else { "offline regression and frontend build; no real model API calls" }
         started_at = $started.ToString("o")
         finished_at = $finished.ToString("o")
         duration_seconds = [math]::Round(($finished - $started).TotalSeconds, 2)
