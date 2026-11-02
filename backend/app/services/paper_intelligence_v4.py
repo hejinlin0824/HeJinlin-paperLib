@@ -128,6 +128,8 @@ def index_paper(paper_id: str, include_embeddings: bool = False) -> dict[str, An
         if len(text) >= 20:
             eligible.append((block, text, tokenize(text)))
     model = _load_embedding_model() if include_embeddings else None
+    if include_embeddings and model is None:
+        raise RuntimeError("尚未配置 PAPERLIB_BGE_M3_PATH；请先设置已下载的本地 BGE-M3 模型目录")
     vectors: dict[int, list[float]] = {}
     if model is not None:
         # Batch encoding is much faster than one model invocation per paragraph.
