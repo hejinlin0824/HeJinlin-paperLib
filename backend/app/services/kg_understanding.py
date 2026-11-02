@@ -120,7 +120,7 @@ def _validate_evidence(payload: dict, block_map: dict[int,str]) -> list[str]:
                 else:
                     warnings.append(f"{label}“{str(item.get('title') or item.get('name') or item.get('claim') or '')[:50]}”证据无法逐字定位，已移除")
             item["evidence"] = evidence[:2]
-            if evidence or label == "贡献" and item.get("importance") == "context":
+            if evidence:
                 valid.append(item)
             else:
                 warnings.append(f"{label}缺少可定位原文证据，已移除")
@@ -262,7 +262,7 @@ async def run_understanding(draft_id: str) -> None:
                                     ensure_ascii=False)[:MAX_INPUT_CHARS]
             rel_result = _json(await chat(info,[{"role":"system","content":"根据贡献树节点生成极少量、方向明确的学术关系候选。只输出 JSON：{\"relations\":[{\"source_id\":\"c1\",\"target_id\":\"c2\",\"relation_type\":\"CONSISTS_OF|SUPPORTS|PROVES|DERIVES|NECESSARY_FOR|SUFFICIENT_FOR|IMPLIES\",\"evidence\":{\"block_id\":123,\"quote\":\"原文逐字摘录\"}}]}。只保留原文明确表达的关系，宁可空数组。"},{"role":"user","content":rel_prompt}],max_tokens=2400))
             if rel_result:
-                payload["relations"] = rel_result.get("relations",[])[:30]
+                payload["relations"] = rel_result.get("relations",[])[:12]
         warnings.extend(_normalise_relations(payload,_evidence_index(sections)))
         # Independent verifier: every candidate relation receives a second semantic check.
         for rel in payload["relations"]:
