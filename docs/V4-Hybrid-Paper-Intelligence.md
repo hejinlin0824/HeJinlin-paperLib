@@ -16,8 +16,8 @@ or V3/V3.1 drafts. New V4 understanding drafts are versioned as 4.0 in the isola
 4. **Academic NLP candidates** — conservative patterns detect definitions, assumptions,
    theorems/propositions/lemmas, necessary/sufficient conditions, proofs and limitations.
    Every candidate points to its source block and remains a candidate, not a verified fact.
-5. **Bounded LLM reasoning** — V4 packs up to two adjacent short chunks from the same
-   section into one request (with a character budget); each chunk keeps its own ID and
+5. **Bounded LLM reasoning** — V4 packs up to two adjacent short chunks into one request (with a character budget),
+   including across section boundaries; each chunk keeps its own section, ID and
    independent JSON result. Missing/malformed batch items fall back to single-chunk calls,
    so partial batch output does not discard valid work. Then V4 performs one deterministic
    JSON compaction step in Python (no model call), followed by a single synthesis call and
@@ -75,6 +75,7 @@ A dedicated vector database can be introduced later if measured corpus size requ
 - Index tables are separate from paper content and old graph tables.
 - Dense embeddings are optional; no network request occurs during lexical indexing/search.
 - The UI/API confirmation flow remains separate from formal graph import.
+- Draft pipeline metadata records actual chunk-batch sizes, LLM operation count, and elapsed seconds for chunk analysis, synthesis, verification, and the overall run.
 
 ## Harness 论文质量评测
 
