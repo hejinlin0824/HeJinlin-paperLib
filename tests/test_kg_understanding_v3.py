@@ -73,3 +73,14 @@ def test_v3_review_status_does_not_write_legacy_graph(isolated_db):
     assert saved["status"] == "approved"
     assert app_db.row("SELECT COUNT(*) n FROM kg_entities")["n"] == 0
     assert app_db.row("SELECT COUNT(*) n FROM kg_relations")["n"] == 0
+
+def test_v3_contribution_tree_rejects_duplicate_ids_and_breaks_cycles(isolated_db):
+    payload = {"contributions":[
+        {"id":"a","title":"A","importance":"core","parent_id":"b"},
+        {"id":"b","title":"B","importance":"supporting","parent_id":"a"},
+        {"id":"a","title":"Duplicate","importance":"core","parent_id":None},
+    ]}
+    warnings = v3._normalise_contributions(payload)
+    assert len(payload["contributions"]) == 2
+    assert any("重复" in x for x in warnings)
+    assert any(x["parent_id"] is None for x in payload["contributions"])
