@@ -17,6 +17,7 @@ import math
 import os
 import re
 from collections import Counter
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -93,17 +94,22 @@ def _section_titles(paper_id: str) -> dict[int, str]:
     return result
 
 
-def _encode_one(model, text: str) -> list[float]:
-    encoded = model.encode([text])
-    # FlagEmbedding BGEM3FlagModel returns a dict; tolerate compatible encoders too.
+def _encode_batch(model, texts: list[str]) -> list[list[float]]:
+    encoded = model.encode(texts)
+    # FlagEmbedding BGEM3FlagModel returns a dict with dense_vecs.
     if isinstance(encoded, dict):
-        encoded = encoded.get("dense_vecs")
-        if encoded is None:
-            encoded = model.encode([text]).get("sentence_embeddings")
-    vector = encoded[0]
-    if hasattr(vector, "tolist"):
-        vector = vector.tolist()
-    return [float(x) for x in vector]
+        vectors = encoded.get("dense_vecs")
+        if vectors is None:
+            vectors = encoded.get("sentence_embeddings")
+    else:
+        vectors = encoded
+    if hasattr(vectors, "tolist"):
+        vectors = vectors.tolist()
+    return [[float(x) for x in vector] for vector in vectors]
+
+
+def _encode_one(model, text: str) -> list[float]:
+    return _encode_batch(model, [text])[0]
 
 
 def index_paper(paper_id: str, include_embeddings: bool = False) -> dict[str, Any]:
@@ -155,6 +161,7 @@ def index_paper(paper_id: str, include_embeddings: bool = False) -> dict[str, An
             "mode": "hybrid" if model else "lexical", "embedding_model": os.environ.get("PAPERLIB_BGE_M3_PATH", "") if model else ""}
 
 
+@lru_cache(maxsize=1)
 def _load_embedding_model():
     model_path = os.environ.get("PAPERLIB_BGE_M3_PATH", "").strip()
     if not model_path:
@@ -246,6 +253,7 @@ def search_blocks(query: str, paper_id: str | None = None, top_k: int = DEFAULT_
                         for x in ranked]}
 
 
+@lru_cache(maxsize=1)
 def _load_gliner():
     model_path = os.environ.get("PAPERLIB_GLINER_PATH", "").strip()
     if not model_path:
