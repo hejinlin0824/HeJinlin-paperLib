@@ -52,3 +52,20 @@ def test_diagnostics_do_not_crash_on_legacy_windows_console_encoding(tmp_path, m
     stdout = io.TextIOWrapper(io.BytesIO(), encoding="cp1252", errors="strict")
     monkeypatch.setattr(sys, "stdout", stdout)
     assert check_library.main() == 0
+
+
+def test_pdf_count_deduplicates_case_insensitive_glob_matches(tmp_path):
+    papers = tmp_path / "data" / "papers" / "paper-1"
+    papers.mkdir(parents=True)
+    (papers / "original.pdf").write_bytes(b"%PDF-1.4")
+    report = inspect_library(tmp_path)
+    assert report["pdf_files"] == 1
+
+
+def test_pdf_count_counts_distinct_files_once(tmp_path):
+    papers = tmp_path / "data" / "papers" / "paper-1"
+    papers.mkdir(parents=True)
+    (papers / "original.pdf").write_bytes(b"%PDF-1.4")
+    (papers / "supplement.PDF").write_bytes(b"%PDF-1.4")
+    report = inspect_library(tmp_path)
+    assert report["pdf_files"] == 2
