@@ -244,7 +244,8 @@ def test_chunk_batching_reduces_calls_and_preserves_per_chunk_sections():
     ]})
     notes = v4._normalise_batch_notes(response, [0, 1], chunks)
     assert set(notes) == {0, 1}
-    assert notes[0]["chunk_index"] == 0 and notes[1]["chunk_index"] == 1
+    assert notes[0]["chunk_index"] == notes[1]["chunk_index"] == 0
+    assert notes[0]["section_index"] == 0 and notes[1]["section_index"] == 1
     assert notes[0]["title"] == "Method"
     assert notes[1]["title"] == "Experiments"
 
