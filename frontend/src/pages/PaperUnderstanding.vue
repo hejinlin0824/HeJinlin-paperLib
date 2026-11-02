@@ -34,7 +34,8 @@ function nodeDepth(id) {
 
 async function refresh() {
   const [p, d] = await Promise.all([api.papers(), api.kgV3Drafts()])
-  papers.value = Array.isArray(p) ? p : (p.items || p.papers || [])
+  papers.value = (Array.isArray(p) ? p : (p.items || p.papers || []))
+    .filter(item => (!item.library_role || item.library_role === 'normal') && !['pending_parse','parsing'].includes(item.status))
   drafts.value = d || []
 }
 async function openDraft(id) {
