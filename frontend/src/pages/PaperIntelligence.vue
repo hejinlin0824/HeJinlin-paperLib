@@ -48,13 +48,15 @@ async function search() {
   if (!query.value.trim()) return
   busy.value = true
   try {
-    const [result, graph] = await Promise.all([
-      api.kgV4Search(query.value, paperId.value || undefined, 10),
-      api.kgV4GraphContext(query.value, paperId.value || undefined, 10)
-    ])
+    const result = await api.kgV4Search(query.value, paperId.value || undefined, 10)
     searchResults.value = result.results || []
-    graphResults.value = graph.results || []
     indexInfo.value = { ...(indexInfo.value || {}), mode: result.mode }
+    try {
+      const graph = await api.kgV4GraphContext(query.value, paperId.value || undefined, 10)
+      graphResults.value = graph.results || []
+    } catch {
+      graphResults.value = []
+    }
   } catch (e) { toast(e.message || '检索失败') }
   finally { busy.value = false }
 }
