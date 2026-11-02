@@ -115,28 +115,35 @@ def _encode_one(model, text: str) -> list[float]:
 def index_paper(paper_id: str, include_embeddings: bool = False) -> dict[str, Any]:
     """Index parsed English blocks. Re-indexing replaces only this paper's search index."""
     ensure_tables()
-    paper = row("SELECT id FROM papers WHERE id=?", (paper_id,))
-    if not paper:
+    if not row("SELECT id FROM papers WHERE id=?", (paper_id,)):
         raise ValueError("论文不存在")
     section_map = _section_titles(paper_id)
     blocks = rows(
         "SELECT id,en,type FROM blocks WHERE paper_id=? AND type IN ('text','heading','list','table') ORDER BY order_idx",
         (paper_id,),
     )
+    eligible = []
+    for block in blocks:
+        text = str(block.get("en") or "").strip()
+        if len(text) >= 20:
+            eligible.append((block, text, tokenize(text)))
     model = _load_embedding_model() if include_embeddings else None
+    vectors: dict[int, list[float]] = {}
+    if model is not None:
+        # Batch encoding is much faster than one model invocation per paragraph.
+        for offset in range(0, len(eligible), 16):
+            batch = eligible[offset:offset + 16]
+            encoded = _encode_batch(model, [item[1] for item in batch])
+            for item, vector in zip(batch, encoded):
+                vectors[int(item[0]["id"])] = vector
     indexed, chars = 0, 0
     seen_ids = set()
     with db() as conn:
-        for block in blocks:
-            text = str(block.get("en") or "").strip()
-            if len(text) < 20:
-                continue
-            terms = tokenize(text)
-            vector: list[float] = []
-            model_name = ""
-            if model is not None:
-                vector = [float(x) for x in model.encode([text])[0]]
-                model_name = os.environ.get("PAPERLIB_BGE_M3_PATH", "")
+        for block, text, terms in eligible:
+            block_id = int(block["id"])
+            seen_ids.add(block_id)
+            vector = vectors.get(block_id, [])
+            model_name = os.environ.get("PAPERLIB_BGE_M3_PATH", "") if vector else ""
             conn.execute("""
                 INSERT INTO paper_intelligence_chunks
                     (paper_id,block_id,section_title,text,terms_json,embedding_json,embedding_model,updated_at)
@@ -145,10 +152,18 @@ def index_paper(paper_id: str, include_embeddings: bool = False) -> dict[str, An
                     section_title=excluded.section_title,text=excluded.text,
                     terms_json=excluded.terms_json,embedding_json=excluded.embedding_json,
                     embedding_model=excluded.embedding_model,updated_at=excluded.updated_at
-            """, (paper_id, int(block["id"]), section_map.get(int(block["id"]), ""),
-                  text, dumps(terms), dumps(vector) if vector else "", model_name, now()))
+            """, (paper_id, block_id, section_map.get(block_id, ""), text, dumps(terms),
+                  dumps(vector) if vector else "", model_name, now()))
             indexed += 1
             chars += len(text)
+        if seen_ids:
+            placeholders = ",".join("?" for _ in seen_ids)
+            conn.execute(
+                f"DELETE FROM paper_intelligence_chunks WHERE paper_id=? AND block_id NOT IN ({placeholders})",
+                (paper_id, *sorted(seen_ids)),
+            )
+        else:
+            conn.execute("DELETE FROM paper_intelligence_chunks WHERE paper_id=?", (paper_id,))
         conn.execute("""
             INSERT INTO paper_intelligence_meta(paper_id,indexed_blocks,indexed_chars,embedding_model,index_status,updated_at)
             VALUES(?,?,?,?,?,?)
@@ -158,7 +173,8 @@ def index_paper(paper_id: str, include_embeddings: bool = False) -> dict[str, An
         """, (paper_id, indexed, chars, os.environ.get("PAPERLIB_BGE_M3_PATH", "") if model else "",
               "hybrid" if model else "lexical", now()))
     return {"paper_id": paper_id, "indexed_blocks": indexed, "indexed_chars": chars,
-            "mode": "hybrid" if model else "lexical", "embedding_model": os.environ.get("PAPERLIB_BGE_M3_PATH", "") if model else ""}
+            "mode": "hybrid" if model else "lexical",
+            "embedding_model": os.environ.get("PAPERLIB_BGE_M3_PATH", "") if model else ""}
 
 
 @lru_cache(maxsize=1)
