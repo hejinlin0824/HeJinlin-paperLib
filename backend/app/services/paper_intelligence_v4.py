@@ -267,6 +267,7 @@ def search_blocks(query: str, paper_id: str | None = None, top_k: int = DEFAULT_
 def search_approved_graph(query: str, paper_id: str | None = None, top_k: int = 10) -> dict[str, Any]:
     """Retrieve graph neighborhoods only from human-approved V4 drafts."""
     from . import kg_understanding as legacy
+    from . import kg_understanding_v31 as v31
     legacy.ensure_tables()
     sql = "SELECT id,paper_id,payload_json FROM kg_understanding_drafts WHERE version=? AND status='approved'"
     args: tuple = ("4.0",)
@@ -278,6 +279,13 @@ def search_approved_graph(query: str, paper_id: str | None = None, top_k: int = 
     results = []
     for draft in drafts:
         payload = loads(draft.get("payload_json"), {})
+        source_blocks = rows("SELECT id,en FROM blocks WHERE paper_id=?", (draft["paper_id"],))
+        block_map = {int(block["id"]): str(block.get("en") or "") for block in source_blocks}
+        # Re-validate evidence at retrieval time; approval never bypasses exact-source checks.
+        legacy._validate_evidence(payload, block_map)
+        legacy._normalise_contributions(payload)
+        legacy._normalise_relations(payload, block_map)
+        v31._validate_logic(payload, block_map)
         nodes = payload.get("contributions") or []
         by_id = {str(node.get("id")): node for node in nodes if node.get("id")}
         matched = []
