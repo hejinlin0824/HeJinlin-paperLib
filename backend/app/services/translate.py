@@ -151,9 +151,9 @@ async def chat(info: dict, messages: list, max_tokens: int | None = None,
                         retry_without_token_limit = True
         except Exception as e:  # noqa: BLE001
             last_err = e
-        if attempt < 2:
+        if attempt < retries - 1:
             await asyncio.sleep(2 * (attempt + 1))
-    raise RuntimeError(f"模型请求失败（已尝试3次）：{last_err}")
+    raise RuntimeError(f"模型请求失败（已尝试{retries}次）：{last_err}")
 
 
 def _glossary_text() -> str:
