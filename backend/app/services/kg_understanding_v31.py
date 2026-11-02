@@ -148,6 +148,29 @@ def _validate_logic(payload: dict, block_map: dict[int, str]) -> list[str]:
     payload["theory_logic"] = accepted
     return warnings
 
+def _compact_notes_deterministic(notes: list[dict]) -> str:
+    """Compact model notes locally; preserve evidence IDs/quotes without another LLM call."""
+    compact = []
+    for note in notes:
+        claims = []
+        for claim in (note.get("claims") or [])[:8]:
+            if not isinstance(claim, dict):
+                continue
+            evidence = [ev for ev in (claim.get("evidence") or [])[:2]
+                        if isinstance(ev, dict) and ev.get("block_id") and ev.get("quote")]
+            claims.append({"claim": str(claim.get("claim") or "")[:500],
+                           "kind": claim.get("kind"), "evidence": evidence})
+        compact.append({
+            "title": note.get("title"), "section_role": note.get("section_role"),
+            "summary": str(note.get("summary") or "")[:900],
+            "claims": claims,
+            "argument_steps": [str(x)[:350] for x in (note.get("argument_steps") or [])[:8]],
+            "candidate_contributions": [str(x)[:300] for x in (note.get("candidate_contributions") or [])[:5]],
+            "open_questions": [str(x)[:250] for x in (note.get("open_questions") or [])[:4]],
+        })
+    return json.dumps(compact, ensure_ascii=False)
+
+
 async def run_understanding(draft_id: str) -> None:
     legacy.ensure_tables()
     draft = row("SELECT * FROM kg_understanding_drafts WHERE id=?", (draft_id,))
@@ -229,31 +252,7 @@ async def run_understanding(draft_id: str) -> None:
         payload["section_map"] = section_map
         payload["progress_stage"] = "paper_synthesis"
         legacy._persist_progress(draft_id, model_name, payload, warnings)
-        # Batch whole note objects; never split JSON or a verbatim evidence quote mid-string.
-        batches, batch, batch_size = [], [], 0
-        for note in notes:
-            encoded = json.dumps(note, ensure_ascii=False)
-            if batch and batch_size + len(encoded) > SYNTHESIS_CHARS:
-                batches.append(batch)
-                batch, batch_size = [], 0
-            batch.append(note)
-            batch_size += len(encoded)
-        if batch:
-            batches.append(batch)
-        reduced = []
-        if len(batches) > 1:
-            for batch_index, note_batch in enumerate(batches):
-                reduced_result = legacy._json(await chat(info, [
-                    {"role": "system", "content": "压缩以下完整论文分块摘要对象，保留主张、论证步骤、知识类型和证据 block_id/quote；不得丢弃必要/充分逻辑。只输出 JSON：{\"notes\":[...]}"},
-                    {"role": "user", "content": json.dumps(note_batch, ensure_ascii=False)}
-                ], max_tokens=3000))
-                if not reduced_result:
-                    raise RuntimeError(f"第 {batch_index+1} 批摘要压缩失败")
-                reduced.extend(reduced_result.get("notes", []))
-            compact_notes = json.dumps(reduced, ensure_ascii=False)
-        else:
-            compact_notes = json.dumps(notes, ensure_ascii=False)
-        payload["progress_stage"] = "contribution_synthesis"
+        # Deterministic local compaction; no LLM compression request is required.\n        compact_notes = _compact_notes_deterministic(notes)\n        payload["progress_stage"] = "contribution_synthesis"
         legacy._persist_progress(draft_id, model_name, payload, warnings)
         result = legacy._json(await chat(info, [
             {"role": "system", "content": SYNTHESIS_SYSTEM},
