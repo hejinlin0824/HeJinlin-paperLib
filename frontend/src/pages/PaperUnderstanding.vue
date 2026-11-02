@@ -114,7 +114,7 @@ onMounted(async () => {
         <h1>先理解论文，再构建知识</h1>
         <p>全文理解 → 贡献树 → 关系语义核验 → 人工审阅。此处的草稿与现有知识图谱完全隔离。</p>
       </div>
-      <a href="/graph">返回知识图谱</a>
+      <nav><a href="/kg-intelligence">打开 V4 混合论文理解 →</a><a href="/graph">返回知识图谱</a></nav>
     </header>
 
     <section class="start-card">
