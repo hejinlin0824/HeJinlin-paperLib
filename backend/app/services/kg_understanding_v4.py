@@ -166,11 +166,11 @@ async def run_understanding(draft_id: str) -> None:
             # No LLM summary-compression stage. Deterministically compact complete note objects.
             compact_notes = _compact_notes(notes)
             try:
+                payload["pipeline"]["llm_operations"] += 1
                 result = legacy._json(await chat(info, [
                     {"role": "system", "content": v31.SYNTHESIS_SYSTEM},
                     {"role": "user", "content": f"论文标题：{title}\\n章节分块分析（证据均带 block_id）：\\n{compact_notes}"},
                 ], max_tokens=7500))
-                payload["pipeline"]["llm_operations"] += 1
                 if not result:
                     raise RuntimeError("论文综合阶段未返回合法 JSON")
                 for key in ("contributions", "theoretical_framework", "method_architecture", "key_findings",
