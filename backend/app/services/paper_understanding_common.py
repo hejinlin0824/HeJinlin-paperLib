@@ -236,7 +236,6 @@ def compact_chunk_notes(notes: list[dict], max_chars: int = 48000) -> tuple[str,
         # Last-resort compact form still carries every chunk's section/chunk and block IDs.
         for item in compact:
             item["summary"] = item["summary"][:6]
-            item["section_role"] = ""
             item["title"] = item["title"][:24]
             for claim in item["claims"]:
                 claim["claim"] = claim["claim"][:32]
