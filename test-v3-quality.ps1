@@ -16,11 +16,11 @@ try {
     Write-Host "Branch: $branch" -ForegroundColor Gray
     Write-Host "Python: $python" -ForegroundColor Gray
     Write-Host ""
-    Write-Host "== 1/4 V3.1 focused backend contracts ==" -ForegroundColor Cyan
+    Write-Host "== 1/2 V3.1 focused backend contracts ==" -ForegroundColor Cyan
     & $python -m pytest -q tests/test_kg_understanding_v31.py
     if ($LASTEXITCODE -ne 0) { throw "V3.1 focused backend tests failed (exit $LASTEXITCODE)." }
     Write-Host ""
-    Write-Host "== 2/4 Full backend regression + frontend tests + production build ==" -ForegroundColor Cyan
+    Write-Host "== 2/2 Full backend regression + frontend tests + production build ==" -ForegroundColor Cyan
     & (Join-Path $root "test-local.ps1")
     if ($LASTEXITCODE -ne 0) { throw "Full local verification failed (exit $LASTEXITCODE)." }
     Write-Host ""
