@@ -251,6 +251,11 @@ async def run_understanding(draft_id: str) -> None:
 
             tasks = [asyncio.create_task(analyze_batch(batch_number, indexes))
                      for batch_number, indexes in enumerate(batches)]
+            for future in asyncio.as_completed(tasks):
+                batch_notes = await future
+                for index, note in batch_notes.items():
+                    notes.append(note)
+                    processed_chars += sum(len(segment["text"]) for segment in chunks[index]["segments"])
                 notes.sort(key=lambda item: (item.get("section_index", 0), item.get("chunk_index", 0)))
                 failed.sort(key=lambda item: (item["section"], item["chunk_index"]))
                 payload["chunk_notes"] = notes
