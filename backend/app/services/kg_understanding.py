@@ -243,35 +243,41 @@ async def run_understanding(draft_id: str) -> None:
         for sec in sections:
             entries = sec["blocks"]
             rendered = [
-                f"<block id={b['id']}>[{sec['title']}] {b['text']}</block>"
+                {"header": f"<block id={b['id']} section={sec['title']}>", "text": b["text"]}
                 for b in entries
             ]
-            full_section = "\n".join(rendered)
+            full_section = "\n".join(
+                item["header"] + item["text"] + "</block>" for item in rendered
+            )
             budget = max(1, per_section_budget - 80)
             if len(full_section) <= budget:
                 excerpt_parts.append(full_section)
                 continue
             truncated_sections.append(sec["title"])
-            # Keep both the beginning and the end of each over-budget section.
-            # This is important for papers that state conditions/conclusions late.
+            # Keep both ends of every section while preserving complete block
+            # identifiers, so evidence references remain attributable.
             head_budget = max(1, int(budget * 0.55))
             tail_budget = max(1, budget - head_budget)
             head_parts, remaining = [], head_budget
             for item in rendered:
                 if remaining <= 0:
                     break
-                piece = item[:remaining]
-                if piece:
-                    head_parts.append(piece)
-                    remaining -= len(piece)
+                header = item["header"]
+                room = max(0, remaining - len(header) - len("</block>"))
+                piece = item["text"][:room]
+                if room > 0:
+                    head_parts.append(header + piece + "</block>")
+                    remaining -= len(header) + len(piece) + len("</block>")
             tail_parts, remaining = [], tail_budget
             for item in reversed(rendered):
                 if remaining <= 0:
                     break
-                piece = item[-remaining:]
-                if piece:
-                    tail_parts.insert(0, piece)
-                    remaining -= len(piece)
+                header = item["header"]
+                room = max(0, remaining - len(header) - len("</block>"))
+                piece = item["text"][-room:] if room else ""
+                if room > 0:
+                    tail_parts.insert(0, header + piece + "</block>")
+                    remaining -= len(header) + len(piece) + len("</block>")
             excerpt_parts.append("\n".join(head_parts + tail_parts))
         source = "\n".join(excerpt_parts)
         if truncated_sections:
