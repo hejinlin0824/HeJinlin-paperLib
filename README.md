@@ -32,7 +32,7 @@
 
 ## V4 Hybrid Paper Intelligence：混合论文理解
 
-V4 工作台：打开 `http://127.0.0.1:8300/kg-intelligence`。它在 V3 草稿流程之外增加本地 Block 级 BM25 检索、可选本地 BGE-M3 向量检索、可选 GLiNER 学术实体候选识别，以及失败可恢复的论文理解流程。默认不下载模型、不调用向量云服务；未配置本地模型时使用纯 SQLite 词法检索。
+V4 工作台：打开 `http://127.0.0.1:8300/kg-intelligence`。它在 V3 草稿流程之外增加本地 Block 级 BM25 检索、可选本地 BGE-M3 向量检索、可选 GLiNER 学术实体候选识别、已审核 V4 图谱上下文检索，以及失败可恢复的论文理解流程。默认不下载模型、不调用向量云服务；未配置本地模型时使用纯 SQLite 词法检索。
 
 V4 详情、可选模型配置、API 和验收说明见 [docs/V4-Hybrid-Paper-Intelligence.md](docs/V4-Hybrid-Paper-Intelligence.md)。Windows 本地验收：
 
