@@ -327,3 +327,29 @@ async def run_understanding(draft_id: str) -> None:
             "input_coverage": round(processed_chars / max(1, total_chars), 4),
             "complete": False})
         legacy._persist_progress(draft_id, model_name, payload, warnings, "failed")
+
+
+# Preserve the existing isolated draft/review API while versioning new jobs as 3.1.
+def create_draft(paper_id: str) -> dict:
+    draft = legacy.create_draft(paper_id)
+    from ..db import db
+    from ..util import now
+    with db() as connection:
+        connection.execute(
+            "UPDATE kg_understanding_drafts SET version=?, updated_at=? WHERE id=?",
+            (VERSION, now(), draft["id"]),
+        )
+    draft["version"] = VERSION
+    return draft
+
+
+def list_drafts(paper_id: str | None = None) -> list[dict]:
+    return legacy.list_drafts(paper_id)
+
+
+def get_draft(draft_id: str) -> dict | None:
+    return legacy.get_draft(draft_id)
+
+
+def update_review(draft_id: str, payload: dict, status: str | None = None) -> dict:
+    return legacy.update_review(draft_id, payload, status)
