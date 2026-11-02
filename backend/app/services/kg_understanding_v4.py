@@ -331,7 +331,7 @@ async def run_understanding(draft_id: str) -> None:
             try:
                 payload["pipeline"]["llm_operations"] += 1
                 synthesis_raw = await _chat_v4(info, [
-                    {"role": "system", "content": SYNTHESIS_SYSTEM},
+                    {"role": "system", "content": SYNTHESIS_SYSTEM + "\\n所有数组对象必须严格包含 Schema 中定义的字段；证据字段统一使用逐字引用数组 [{block_id,quote}]，关系证据使用单个 {block_id,quote}。不得输出额外字段。"},
                     {"role": "user", "content": f"论文标题：{title}\n章节分块分析（证据均带 block_id；共 {compact_stats['chunks_included']} 个分块）：\n{compact_notes}"},
                 ], max_tokens=7500, schema_name="paperlib_v4_synthesis", schema=synthesis_schema())
                 result = parse_and_validate(synthesis_raw, synthesis_schema())
