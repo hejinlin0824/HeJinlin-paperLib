@@ -75,6 +75,12 @@ def search(q: str = Query(..., min_length=1), paper_id: str | None = Query(None)
         raise HTTPException(400, str(exc))
 
 
+@router.get("/graph-context")
+def graph_context(q: str = Query(..., min_length=1), paper_id: str | None = Query(None),
+                 top_k: int = Query(10, ge=1, le=50)):
+    return service.search_graph_context(q, paper_id, top_k)
+
+
 @router.get("/papers/{paper_id}/structure-candidates")
 def structure_candidates(paper_id: str):
     try:
