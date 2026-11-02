@@ -91,7 +91,7 @@ def _sections(pid: str) -> list[dict]:
             title = s.get("title_en") or s.get("title") or "Untitled section"
             is_backmatter = bool(re.search(r"references|bibliography|acknowledg(e)?ments|参考文献|致谢", title, re.I))
             current = {"title": title, "skip": bool(s.get("skip")) or is_backmatter,
-                       "blocks": [], "chars": 0}
+                       "blocks": [], "chars": 0, "truncated": False}
             out.append(current)
         if current is None or current["skip"] or b["type"] not in ("text","heading","list","table"):
             continue
@@ -99,6 +99,8 @@ def _sections(pid: str) -> list[dict]:
         if len(text) < 25: continue
         remaining = MAX_SECTION_CHARS - current["chars"]
         if remaining <= 0: continue
+        if len(text) > remaining:
+            current["truncated"] = True
         text = text[:remaining]
         current["blocks"].append({"id": b["id"], "text": text})
         current["chars"] += len(text)
@@ -218,7 +220,7 @@ async def run_understanding(draft_id: str) -> None:
                                   (dumps(["没有可用的已解析正文"]),now(),draft_id))
         return
     title = paper.get("title_zh") or paper.get("title") or "未命名论文"
-    section_notes, warnings = [], []
+    section_notes, warnings = [], [f"章节“{s['title']}”超过单章输入预算，已截断部分正文" for s in sections if s.get("truncated")]
     try:
         for i, sec in enumerate(sections):
             prompt = f"论文：{title}\n章节：{sec['title']}\n" + "\n".join(
@@ -234,7 +236,10 @@ async def run_understanding(draft_id: str) -> None:
         for sec in sections:
             for b in sec["blocks"]:
                 excerpt_parts.append(f"<block id={b['id']}>[{sec['title']}] {b['text']}</block>")
-        source = "\n".join(excerpt_parts)[:MAX_INPUT_CHARS]
+        full_source = "\n".join(excerpt_parts)
+        source = full_source[:MAX_INPUT_CHARS]
+        if len(full_source) > MAX_INPUT_CHARS:
+            warnings.append(f"全文综合上下文超过 {MAX_INPUT_CHARS} 字符预算，尾部正文未进入综合输入；结果需人工重点核对")
         synthesis_prompt = (
             f"论文标题：{title}\n章节角色与摘要：{json.dumps(section_notes,ensure_ascii=False)}\n"
             f"可核验原文块（可能因长度上限未覆盖全文；不可引用未提供内容）：\n{source}\n"
