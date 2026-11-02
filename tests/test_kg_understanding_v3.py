@@ -67,6 +67,7 @@ def test_v3_review_status_does_not_write_legacy_graph(isolated_db):
     app_db.ex("INSERT INTO blocks(paper_id,order_idx,type,en) VALUES(?,?,?,?)",
               ("paper-v3",0,"text","A sufficiently long source paragraph for a paper understanding test."))
     draft = v3.create_draft("paper-v3")
+    app_db.ex("UPDATE kg_understanding_drafts SET status='draft' WHERE id=?",(draft["id"],))
     payload = {"paper_type":"theory","contributions":[],"relations":[]}
     saved = v3.update_review(draft["id"],payload,"approved")
     assert saved["status"] == "approved"
