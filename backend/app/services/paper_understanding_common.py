@@ -204,6 +204,28 @@ def compact_chunk_notes(notes: list[dict], max_chars: int = 48000) -> tuple[str,
                 truncated = True
             item["summary"] = item["summary"][:summary_budget]
         encoded = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+    if len(encoded) > max_chars:
+        # At very small budgets, shorten prose fields while keeping chunk identity and evidence anchors.
+        for item in compact:
+            item["title"] = item["title"][:48]
+            for claim in item["claims"]:
+                if len(claim["claim"]) > 72 or any(len(ev["quote"]) > 80 for ev in claim["evidence"]):
+                    truncated = True
+                claim["claim"] = claim["claim"][:72]
+                for evidence in claim["evidence"]:
+                    evidence["quote"] = evidence["quote"][:80]
+        encoded = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+    if len(encoded) > max_chars:
+        # Last-resort compact form still carries every chunk's section/chunk and block IDs.
+        for item in compact:
+            item["summary"] = item["summary"][:8]
+            item["section_role"] = ""
+            item["title"] = item["title"][:24]
+            for claim in item["claims"]:
+                claim["claim"] = claim["claim"][:32]
+                for evidence in claim["evidence"]:
+                    evidence["quote"] = evidence["quote"][:40]
+        encoded = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
     stats = {
         "input_chars": source_chars, "output_chars": len(encoded),
         "chunks_included": len(compact), "chunks_total": len(notes),
