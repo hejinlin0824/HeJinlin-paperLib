@@ -102,3 +102,19 @@ def test_fallback_payload_never_labels_rule_candidates_as_verified_contributions
     assert payload["contributions"][0]["origin"] == "rule_candidate_not_model_verified"
     assert payload["contributions"][0]["importance"] == "supporting"
     assert payload["contributions"][0]["evidence"][0]["block_id"] == 12
+
+@pytest.mark.asyncio
+async def test_llm_chunk_failure_keeps_a_recoverable_v4_draft(isolated_db, monkeypatch):
+    _paper_with_blocks()
+    draft = v4.create_draft("harness-paper")
+    monkeypatch.setattr(v4, "engine_info", lambda: {"provider": "custom", "model": "unit-test"})
+    monkeypatch.setattr(v4, "engine_ready", lambda _info: (True, ""))
+    async def failing_chat(*_args, **_kwargs):
+        raise RuntimeError("simulated model timeout")
+    monkeypatch.setattr(v4, "chat", failing_chat)
+    await v4.run_understanding(draft["id"])
+    saved = v4.get_draft(draft["id"])
+    assert saved["status"] == "draft"
+    assert saved["payload"]["version"] == "4.0"
+    assert saved["payload"]["coverage"]["failed_chunks"] >= 1
+    assert any("分块" in warning for warning in saved["warnings"])
