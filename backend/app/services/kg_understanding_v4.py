@@ -112,7 +112,8 @@ async def run_understanding(draft_id: str) -> None:
         total_chars = sum(len(x["text"]) for section in sections for x in section["blocks"])
         total_chunk_chars = sum(len(x["text"]) for chunk in chunks for x in chunk["segments"])
         notes: list[dict] = []
-        failed: list[dict] = []\n        processed_chars = 0
+        failed: list[dict] = []
+        processed_chars = 0
         payload.update({"paper_title": title, "progress_stage": "chunk_analysis"})
         legacy._persist_progress(draft_id, model_name, payload, warnings)
         ready, reason = engine_ready(info)
@@ -169,7 +170,7 @@ async def run_understanding(draft_id: str) -> None:
                 payload["pipeline"]["llm_operations"] += 1
                 result = legacy._json(await chat(info, [
                     {"role": "system", "content": v31.SYNTHESIS_SYSTEM},
-                    {"role": "user", "content": f"论文标题：{title}\\n章节分块分析（证据均带 block_id）：\\n{compact_notes}"},
+                    {"role": "user", "content": f"论文标题：{title}\n章节分块分析（证据均带 block_id）：\n{compact_notes}"},
                 ], max_tokens=7500))
                 if not result:
                     raise RuntimeError("论文综合阶段未返回合法 JSON")
