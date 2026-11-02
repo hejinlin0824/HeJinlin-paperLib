@@ -40,7 +40,7 @@ V4 详情、可选模型配置、API 和验收说明见 [docs/V4-Hybrid-Paper-In
 git switch feat/paper-intelligence-v4
 git pull --ff-only origin feat/paper-intelligence-v4
 Set-ExecutionPolicy -Scope Process Bypass
-.\\test-v4-quality.ps1
+.\test-v4-quality.ps1
 ```
 
 V4 新草稿使用版本号 4.0，仍存放在隔离草稿表；确认档案不会自动写入旧知识图谱。V3.0/V3.1 历史草稿和正式论文库均保留。
