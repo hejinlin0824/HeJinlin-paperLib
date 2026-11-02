@@ -82,11 +82,13 @@ def test_v4_compaction_is_deterministic_and_preserves_verbatim_evidence():
             "claims": [{"claim": "T1 is necessary", "kind": "condition",
                         "evidence": [{"block_id": 9, "quote": "T1 is necessary."}]}],
             "argument_steps": ["The author removes T1 and shows failure."]}
-    first = v4._compact_notes([note])
-    second = v4._compact_notes([note])
+    first, first_stats = v4._compact_notes([note])
+    second, second_stats = v4._compact_notes([note])
     assert first == second
-    assert '"block_id": 9' in first
+    assert first_stats == second_stats
+    assert '"block_id":9' in first
     assert '"T1 is necessary."' in first
+    assert first_stats["chunks_included"] == 1
 
 
 def test_new_v4_draft_is_versioned_and_old_graph_remains_untouched(isolated_db):
