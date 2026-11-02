@@ -129,37 +129,6 @@ def _validate_logic(payload: dict, block_map: dict[int, str]) -> list[str]:
     payload["theory_logic"] = accepted
     return warnings
 
-def _validate_logic(payload: dict, block_map: dict[int, str]) -> list[str]:
-    warnings, accepted = [], []
-    nodes = {str(n.get("id")) for n in payload.get("contributions", []) if n.get("id")}
-    allowed = {"HAS_NECESSARY_CONDITION", "NECESSARY_FOR", "JOINTLY_SUFFICIENT_FOR", "EQUIVALENT_TO",
-               "IMPLIES", "NOT_REQUIRED", "SPECIALIZATION_OF", "EXCLUDES", "CONTRADICTS"}
-    for rel in payload.get("theory_logic", []) if isinstance(payload.get("theory_logic"), list) else []:
-        if not isinstance(rel, dict):
-            continue
-        try:
-            bid = int((rel.get("evidence") or {}).get("block_id"))
-        except (TypeError, ValueError, AttributeError):
-            bid = -1
-        quote = str((rel.get("evidence") or {}).get("quote") or "").strip()
-        raw_sources = rel.get("source_ids", [])
-        sources = [str(x) for x in raw_sources] if isinstance(raw_sources, list) else []
-        target = str(rel.get("target_id") or "")
-        kind = str(rel.get("relation_type") or "").upper()
-        valid_shape = kind in allowed and target in nodes and bool(sources) and all(x in nodes for x in sources)
-        if kind == "JOINTLY_SUFFICIENT_FOR":
-            valid_shape = valid_shape and len(set(sources)) >= 2
-        if not valid_shape or len(quote) < 12 or quote not in block_map.get(bid, ""):
-            warnings.append("一条理论逻辑关系因端点、关系类型或逐字证据无效而移除")
-            continue
-        accepted.append({"id": str(rel.get("id") or f"logic{len(accepted)+1}"),
-                         "relation_type": kind, "source_ids": list(dict.fromkeys(sources)),
-                         "target_id": target, "statement": str(rel.get("statement") or "")[:600],
-                         "evidence": {"block_id": bid, "quote": quote}, "verification": "evidence_supported"})
-    payload["theory_logic"] = accepted
-    return warnings
-
-
 def compact_chunk_notes(notes: list[dict], max_chars: int = 48000) -> tuple[str, dict]:
     """Bound synthesis input while retaining a compact record for every analyzed chunk.
 
