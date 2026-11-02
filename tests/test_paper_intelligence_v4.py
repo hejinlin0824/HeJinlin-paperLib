@@ -92,6 +92,7 @@ def test_v4_compaction_is_deterministic_and_preserves_verbatim_evidence():
 def test_new_v4_draft_is_versioned_and_old_graph_remains_untouched(isolated_db):
     _paper_with_blocks()
     old_draft = v31.create_draft("harness-paper")
+    app_db.ex("UPDATE kg_understanding_drafts SET status=? WHERE id=?", ("draft", old_draft["id"]))
     draft = v4.create_draft("harness-paper")
     assert draft["version"] == "4.0"
     assert v4.get_draft(draft["id"])["version"] == "4.0"
