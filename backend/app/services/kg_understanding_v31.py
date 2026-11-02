@@ -77,7 +77,12 @@ def _load_sections(paper_id: str) -> tuple[list[dict], dict[int, str]]:
             backmatter = bool(re.search(r"references|bibliography|acknowledg(e)?ments|参考文献|致谢", title, re.I))
             current = {"title": title, "skip": bool(section.get("skip")) or backmatter, "blocks": []}
             sections.append(current)
-        if current is None or current["skip"] or block["type"] not in ("text", "heading", "list", "table"):
+        if block["type"] not in ("text", "heading", "list", "table"):
+            continue
+        if current is None:
+            current = {"title": "Abstract / 前置内容", "skip": False, "blocks": []}
+            sections.append(current)
+        if current["skip"]:
             continue
         text = (block.get("en") or "").strip()
         if len(text) < 25:
