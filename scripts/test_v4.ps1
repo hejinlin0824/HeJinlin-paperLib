@@ -145,6 +145,12 @@ try {
             $payload = $detail.payload
             $coverage = $payload.coverage
             $pipeline = $payload.pipeline
+            if (-not $pipeline.llm_operations -or -not $coverage.completed_chunks) {
+                throw "The live test did not complete any model-backed chunk analysis. Check the configured provider/model and inspect the retained draft $draftId."
+            }
+            if ($coverage.failed_chunks -gt 0) {
+                throw "The live test completed with $($coverage.failed_chunks) failed chunks. Draft $draftId is retained for inspection."
+            }
             $liveReport = [ordered]@{
                 status = $detail.status
                 draft_id = $draftId
