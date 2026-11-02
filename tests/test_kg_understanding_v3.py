@@ -19,7 +19,7 @@ def test_v3_evidence_requires_exact_quote_and_real_block(isolated_db):
     payload = {
         "contributions": [
             {"id":"c1","title":"Four necessary and sufficient conditions","importance":"core",
-             "evidence":[{"block_id":1,"quote":"The four conditions are necessary and sufficient."}]},
+             "evidence":[{"block_id":1,"quote":"The four conditions are necessary and sufficient"}]},
             {"id":"c2","title":"Invented contribution","importance":"core",
              "evidence":[{"block_id":99,"quote":"This quote is not in the source text."}]},
         ],
