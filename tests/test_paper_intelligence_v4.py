@@ -136,3 +136,20 @@ def test_quality_evaluator_reports_proxy_metrics_and_evidence_accuracy():
     assert report["joint_sufficiency_hyperedge_shape_rate"] == 1.0
     assert report["unverified_edge_count"] == 1
     assert report["negative_cases_for_human_review"] == ["A UI is not necessary"]
+
+def test_default_search_is_lexical_when_no_local_vectors_are_configured(isolated_db, monkeypatch):
+    _paper_with_blocks()
+    monkeypatch.delenv("PAPERLIB_BGE_M3_PATH", raising=False)
+    intel.index_paper("harness-paper", include_embeddings=False)
+    result = intel.search_blocks("agent harness", "harness-paper")
+    assert result["mode"] == "lexical"
+
+
+def test_reindex_removes_stale_block_rows(isolated_db):
+    first, second = _paper_with_blocks()
+    intel.index_paper("harness-paper", include_embeddings=False)
+    app_db.ex("DELETE FROM blocks WHERE id=?", (second,))
+    refreshed = intel.index_paper("harness-paper", include_embeddings=False)
+    assert refreshed["indexed_blocks"] == 1
+    assert app_db.row("SELECT COUNT(*) n FROM paper_intelligence_chunks WHERE paper_id=?",
+                      ("harness-paper",))["n"] == 1
