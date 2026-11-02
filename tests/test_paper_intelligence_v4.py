@@ -197,24 +197,24 @@ def test_successful_v4_pipeline_reports_real_input_coverage(isolated_db, monkeyp
     assert coverage["input_coverage"] == 1.0
 
 def test_graph_context_retrieves_only_approved_v4_nodes_and_hyperedges(isolated_db):
-    _paper_with_blocks()
+    first, _ = _paper_with_blocks()
     draft = v4.create_draft("harness-paper")
     app_db.ex("UPDATE kg_understanding_drafts SET status=? WHERE id=?", ("draft", draft["id"]))
     payload = {
         "version": "4.0",
         "contributions": [
             {"id": "harness", "title": "Agent harness", "description": "Runtime engineering layer",
-             "evidence": [{"block_id": _paper_with_blocks()[0], "quote": "Definition 1. An agent harness is a runtime engineering layer."}]},
+             "evidence": [{"block_id": first, "quote": "Definition 1. An agent harness is a runtime engineering layer."}]},
             {"id": "loop", "title": "Agent loop", "description": "Adaptive execution loop",
-             "evidence": [{"block_id": _paper_with_blocks()[0], "quote": "Definition 1. An agent harness is a runtime engineering layer."}]},
+             "evidence": [{"block_id": first, "quote": "Definition 1. An agent harness is a runtime engineering layer."}]},
             {"id": "tools", "title": "Tool interface", "description": "External environment tools",
-             "evidence": [{"block_id": _paper_with_blocks()[0], "quote": "Definition 1. An agent harness is a runtime engineering layer."}]},
+             "evidence": [{"block_id": first, "quote": "Definition 1. An agent harness is a runtime engineering layer."}]},
         ],
         "relations": [],
         "theory_logic": [{"id": "joint", "relation_type": "JOINTLY_SUFFICIENT_FOR",
                           "source_ids": ["loop", "tools"], "target_id": "harness",
                           "statement": "Loop and tools jointly support the harness definition.",
-                          "evidence": {"block_id": _paper_with_blocks()[0], "quote": "Definition 1. An agent harness is a runtime engineering layer."}}],
+                          "evidence": {"block_id": first, "quote": "Definition 1. An agent harness is a runtime engineering layer."}}],
     }
     v4.update_review(draft["id"], payload, "approved")
     result = intel.search_approved_graph("agent harness", "harness-paper")
