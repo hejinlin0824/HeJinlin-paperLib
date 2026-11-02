@@ -9,6 +9,7 @@ import pytest
 from app import db as app_db
 from app.services import paper_intelligence_v4 as intel
 from app.services import kg_understanding_v4 as v4
+from app.services import kg_understanding_v31 as v31
 from app.util import now
 
 
@@ -90,9 +91,12 @@ def test_v4_compaction_is_deterministic_and_preserves_verbatim_evidence():
 
 def test_new_v4_draft_is_versioned_and_old_graph_remains_untouched(isolated_db):
     _paper_with_blocks()
+    old_draft = v31.create_draft("harness-paper")
     draft = v4.create_draft("harness-paper")
     assert draft["version"] == "4.0"
     assert v4.get_draft(draft["id"])["version"] == "4.0"
+    assert v4.get_draft(old_draft["id"]) is None
+    assert [item["id"] for item in v4.list_drafts("harness-paper")] == [draft["id"]]
     assert app_db.row("SELECT COUNT(*) n FROM kg_entities")["n"] == 0
     assert app_db.row("SELECT COUNT(*) n FROM kg_relations")["n"] == 0
 
