@@ -226,20 +226,30 @@ async def run_understanding(draft_id: str) -> None:
         payload["section_map"] = section_map
         payload["progress_stage"] = "paper_synthesis"
         legacy._persist_progress(draft_id, model_name, payload, warnings)
-        compact_notes = json.dumps(notes, ensure_ascii=False)
-        if len(compact_notes) > SYNTHESIS_CHARS:
-            # Hierarchical compression: summarize bounded batches, never silently head/tail truncate.
-            batches = [compact_notes[i:i + SYNTHESIS_CHARS] for i in range(0, len(compact_notes), SYNTHESIS_CHARS)]
-            reduced = []
-            for batch_index, batch in enumerate(batches):
+        # Batch whole note objects; never split JSON or a verbatim evidence quote mid-string.
+        batches, batch, batch_size = [], [], 0
+        for note in notes:
+            encoded = json.dumps(note, ensure_ascii=False)
+            if batch and batch_size + len(encoded) > SYNTHESIS_CHARS:
+                batches.append(batch)
+                batch, batch_size = [], 0
+            batch.append(note)
+            batch_size += len(encoded)
+        if batch:
+            batches.append(batch)
+        reduced = []
+        if len(batches) > 1:
+            for batch_index, note_batch in enumerate(batches):
                 reduced_result = legacy._json(await chat(info, [
-                    {"role": "system", "content": "压缩以下论文分块摘要，保留主张、论证步骤、类型和证据 block_id/quote，不得丢弃必要/充分逻辑。只输出 JSON：{\"notes\":[...]}"},
-                    {"role": "user", "content": batch}
+                    {"role": "system", "content": "压缩以下完整论文分块摘要对象，保留主张、论证步骤、知识类型和证据 block_id/quote；不得丢弃必要/充分逻辑。只输出 JSON：{\"notes\":[...]}"},
+                    {"role": "user", "content": json.dumps(note_batch, ensure_ascii=False)}
                 ], max_tokens=3000))
                 if not reduced_result:
                     raise RuntimeError(f"第 {batch_index+1} 批摘要压缩失败")
                 reduced.extend(reduced_result.get("notes", []))
             compact_notes = json.dumps(reduced, ensure_ascii=False)
+        else:
+            compact_notes = json.dumps(notes, ensure_ascii=False)
         payload["progress_stage"] = "contribution_synthesis"
         legacy._persist_progress(draft_id, model_name, payload, warnings)
         result = legacy._json(await chat(info, [
