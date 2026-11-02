@@ -158,11 +158,11 @@ onMounted(async () => {
           </div>
 
           <section class="block coverage-panel">
-            <div class="section-title"><h3>论文理解覆盖率</h3><span>{{ payload.coverage?.complete ? '完整分块覆盖' : '存在未覆盖内容' }}</span></div>
+            <div class="section-title"><h3>论文理解覆盖率</h3><span>{{ !payload.coverage ? '旧版未统计' : (payload.coverage.complete ? '完整分块覆盖' : '存在未覆盖内容') }}</span></div>
             <div class="coverage-grid">
               <article><strong>{{ payload.coverage?.section_count ?? (payload.section_map || []).length }}</strong><small>章节数</small></article>
               <article><strong>{{ payload.coverage?.completed_chunks ?? '—' }} / {{ payload.coverage?.chunk_count ?? '—' }}</strong><small>完成分块</small></article>
-              <article><strong>{{ Math.round((payload.coverage?.input_coverage || 0) * 100) }}%</strong><small>正文输入覆盖率</small></article>
+              <article><strong>{{ payload.coverage ? Math.round((payload.coverage.input_coverage || 0) * 100) + '%' : '—' }}</strong><small>正文输入覆盖率</small></article>
               <article><strong>{{ payload.coverage?.failed_chunks ?? 0 }}</strong><small>失败分块</small></article>
             </div>
             <p class="hint">覆盖率统计的是实际送入分块分析模型的正文字符比例，不代表模型已经正确理解全部内容；仍需核对证据和逻辑。</p>
