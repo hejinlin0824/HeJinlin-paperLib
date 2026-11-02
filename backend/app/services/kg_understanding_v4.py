@@ -45,7 +45,7 @@ def _fallback_payload(title: str, section_map: list[dict], candidates: list[dict
         contributions.append({
             "id": f"rule_{i}", "title": f"{item['kind'].title()}: {item['matched_term']}",
             "description": item["excerpt"][:500], "kind": item["kind"],
-            "importance": "supporting", "knowledge_role": "proof_or_argument" if item["kind"] == "proof" else "formal_definition" if item["kind"] == "definition" else "core_claim",
+            "importance": "supporting", "knowledge_role": "rule_candidate",
             "parent_id": None, "evidence": [{"block_id": item["block_id"], "quote": item["excerpt"][:240]}],
             "origin": "rule_candidate_not_model_verified",
         })
@@ -103,7 +103,11 @@ async def run_understanding(draft_id: str) -> None:
             payload["pipeline"]["indexed_blocks"] = index_result["indexed_blocks"]
         except Exception as exc:
             warnings.append(f"本地检索索引建立失败，继续论文理解：{type(exc).__name__}")
-        candidates = intelligence.extract_structure_candidates(draft["paper_id"])["candidates"]
+        try:
+            candidates = intelligence.extract_structure_candidates(draft["paper_id"])["candidates"]
+        except Exception as exc:
+            candidates = []
+            warnings.append(f"GLiNER/规则候选提取不可用，继续主流程：{type(exc).__name__}")
         payload["pipeline"]["rule_candidates"] = len(candidates)
         sections, block_map = v31._load_sections(draft["paper_id"])
         chunks = v31._make_chunks(sections)
@@ -207,7 +211,7 @@ async def run_understanding(draft_id: str) -> None:
         for node in payload.get("contributions", []):
             role = str(node.get("knowledge_role") or "").lower()
             if role not in {"formal_definition", "operational_criterion", "example_or_case",
-                            "non_essential_property", "proof_or_argument", "background", "core_claim"}:
+                            "non_essential_property", "proof_or_argument", "background", "core_claim", "rule_candidate"}:
                 node["knowledge_role"] = "core_claim" if node.get("importance") == "core" else "proof_or_argument"
         if payload.get("paper_type") not in {"theory", "algorithm", "system", "empirical", "survey", "other"}:
             payload["paper_type"] = "other"
