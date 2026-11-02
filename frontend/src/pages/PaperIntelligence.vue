@@ -169,6 +169,7 @@ onMounted(async () => {
         <div v-for="node in group.matched_nodes" :key="node.id" class="graph-node">
           <strong>{{ node.title }}</strong><small>相关度 {{ node.score }} · {{ node.importance }} · {{ node.knowledge_role }}</small>
           <p>{{ node.description }}</p>
+          <a v-for="ev in (node.evidence || [])" :key="ev.block_id + ev.quote" :href="`/reader/${group.paper_id}?block=${ev.block_id}`">证据 Block #{{ ev.block_id }} · 定位原文 ↗</a>
         </div>
         <div v-for="(edge, i) in group.graph_paths" :key="i" class="graph-edge">
           {{ edge.kind }}：{{ edge.relation_type }} · {{ edge.statement || edge.reason || '' }}
