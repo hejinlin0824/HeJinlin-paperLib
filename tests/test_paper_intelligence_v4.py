@@ -153,3 +153,39 @@ def test_reindex_removes_stale_block_rows(isolated_db):
     assert refreshed["indexed_blocks"] == 1
     assert app_db.row("SELECT COUNT(*) n FROM paper_intelligence_chunks WHERE paper_id=?",
                       ("harness-paper",))["n"] == 1
+
+def test_successful_v4_pipeline_reports_real_input_coverage(isolated_db, monkeypatch):
+    first, _ = _paper_with_blocks()
+    draft = v4.create_draft("harness-paper")
+    monkeypatch.setattr(v4, "engine_info", lambda: {"provider": "custom", "model": "unit-test", "concurrency": 2})
+    monkeypatch.setattr(v4, "engine_ready", lambda _info: (True, ""))
+    chunk_response = {
+        "section_role": "theory", "summary": "The paper defines an agent harness.",
+        "claims": [{"claim": "An agent harness is a runtime engineering layer.",
+                    "kind": "definition",
+                    "evidence": [{"block_id": first,
+                                  "quote": "Definition 1. An agent harness is a runtime engineering layer."}]}],
+        "argument_steps": [], "candidate_contributions": [], "open_questions": []
+    }
+    synthesis_response = {
+        "paper_type": "theory", "problem": "Terminological ambiguity", "thesis": "A constitutive definition",
+        "contributions": [{"id": "harness-definition", "title": "Agent harness definition",
+                           "description": "A runtime engineering layer.", "kind": "definition",
+                           "importance": "core", "knowledge_role": "formal_definition", "parent_id": None,
+                           "evidence": [{"block_id": first,
+                                         "quote": "Definition 1. An agent harness is a runtime engineering layer."}]}],
+        "theoretical_framework": [], "method_architecture": [], "key_findings": [],
+        "limitations": [], "uncertainties": [], "relations": [], "theory_logic": [], "argument_map": []
+    }
+    responses = iter([json.dumps(chunk_response), json.dumps(synthesis_response)])
+    async def fake_chat(*_args, **_kwargs):
+        return next(responses)
+    monkeypatch.setattr(v4, "_chat_v4", fake_chat)
+    asyncio.run(v4.run_understanding(draft["id"]))
+    saved = v4.get_draft(draft["id"])
+    coverage = saved["payload"]["coverage"]
+    assert saved["status"] == "draft"
+    assert saved["payload"]["contributions"][0]["id"] == "harness-definition"
+    assert coverage["completed_chunks"] == coverage["chunk_count"] == 1
+    assert coverage["processed_chars"] == coverage["chunked_chars"]
+    assert coverage["input_coverage"] == 1.0
