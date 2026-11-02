@@ -16,7 +16,10 @@ or V3/V3.1 drafts. New V4 understanding drafts are versioned as 4.0 in the isola
 4. **Academic NLP candidates** — conservative patterns detect definitions, assumptions,
    theorems/propositions/lemmas, necessary/sufficient conditions, proofs and limitations.
    Every candidate points to its source block and remains a candidate, not a verified fact.
-5. **Bounded LLM reasoning** — V4 analyzes bounded chunks, then performs one deterministic
+5. **Bounded LLM reasoning** — V4 packs up to two adjacent short chunks from the same
+   section into one request (with a character budget); each chunk keeps its own ID and
+   independent JSON result. Missing/malformed batch items fall back to single-chunk calls,
+   so partial batch output does not discard valid work. Then V4 performs one deterministic
    JSON compaction step in Python (no model call), followed by a single synthesis call and
    at most one batched relation-verification call. It does not call an LLM once per edge.
 6. **Knowledge modeling** — evidence is checked against the original block map; ordinary
