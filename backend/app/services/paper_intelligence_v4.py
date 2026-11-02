@@ -246,6 +246,19 @@ def search_blocks(query: str, paper_id: str | None = None, top_k: int = DEFAULT_
                         for x in ranked]}
 
 
+def _load_gliner():
+    model_path = os.environ.get("PAPERLIB_GLINER_PATH", "").strip()
+    if not model_path:
+        return None
+    if not Path(model_path).exists():
+        raise RuntimeError("PAPERLIB_GLINER_PATH 必须指向已下载到本机的 GLiNER 模型目录；不会自动联网下载")
+    try:
+        from gliner import GLiNER
+    except ImportError as exc:
+        raise RuntimeError("启用 GLiNER 前请安装可选依赖：pip install -r backend/requirements-intelligence.txt") from exc
+    return GLiNER.from_pretrained(model_path)
+
+
 def extract_structure_candidates(paper_id: str) -> dict[str, Any]:
     """Conservative rule-based candidate discovery; all results point to source blocks."""
     blocks = rows(
@@ -260,8 +273,35 @@ def extract_structure_candidates(paper_id: str) -> dict[str, Any]:
             if match:
                 excerpt = text[max(0, match.start() - 100):min(len(text), match.end() + 240)].strip()
                 candidates.append({"kind": kind, "block_id": int(block["id"]),
-                                   "matched_term": match.group(0), "excerpt": excerpt})
-    return {"paper_id": paper_id, "candidate_count": len(candidates), "candidates": candidates}
+                                   "matched_term": match.group(0), "excerpt": excerpt,
+                                   "source": "rule", "score": 1.0})
+    # Optional local GLiNER zero-shot entity proposals. It never downloads weights.
+    model = _load_gliner()
+    if model is not None:
+        labels = ["definition", "assumption", "necessary condition", "sufficient condition",
+                  "theorem", "proposition", "lemma", "corollary", "proof", "method",
+                  "dataset", "evaluation metric", "limitation"]
+        for block in blocks:
+            text = str(block.get("en") or "")
+            if len(text) < 30:
+                continue
+            for entity in model.predict_entities(text, labels, threshold=0.45):
+                start, end = int(entity.get("start", 0)), int(entity.get("end", 0))
+                if start < 0 or end <= start or end > len(text):
+                    continue
+                quote = text[start:end]
+                candidates.append({"kind": str(entity.get("label") or "academic_entity").lower(),
+                                   "block_id": int(block["id"]), "matched_term": quote,
+                                   "excerpt": text[max(0, start - 100):min(len(text), end + 240)].strip(),
+                                   "source": "gliner", "score": round(float(entity.get("score") or 0), 4)})
+    # Stable de-duplication by source span and semantic label.
+    unique, seen = [], set()
+    for item in candidates:
+        key = (item["block_id"], item["kind"], item["matched_term"].lower())
+        if key not in seen:
+            seen.add(key)
+            unique.append(item)
+    return {"paper_id": paper_id, "candidate_count": len(unique), "candidates": unique}
 
 
 def index_status(paper_id: str) -> dict[str, Any] | None:
