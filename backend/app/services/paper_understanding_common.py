@@ -142,14 +142,25 @@ def compact_chunk_notes(notes: list[dict], max_chars: int = 48000) -> tuple[str,
     per_note = max(120, (max_chars - 2) // len(notes))
     compact = []
     evidence_items = 0
+    truncated = False
     for note in notes:
         claims = []
+        if (len(str(note.get("summary") or "")) > 420
+                or len(note.get("claims") or []) > 2
+                or len(note.get("argument_steps") or []) > 2
+                or len(note.get("candidate_contributions") or []) > 2
+                or len(note.get("open_questions") or []) > 1):
+            truncated = True
         for claim in (note.get("claims") or [])[:2]:
             if not isinstance(claim, dict):
                 continue
             evidence = []
+            if len(str(claim.get("claim") or "")) > 180 or len(claim.get("evidence") or []) > 1:
+                truncated = True
             for ev in (claim.get("evidence") or [])[:1]:
                 if isinstance(ev, dict) and ev.get("block_id") and ev.get("quote"):
+                    if len(str(ev.get("quote") or "")) > 180:
+                        truncated = True
                     evidence.append({"block_id": ev["block_id"], "quote": str(ev["quote"])[:180]})
             evidence_items += len(evidence)
             claims.append({"claim": str(claim.get("claim") or "")[:180],
@@ -171,26 +182,32 @@ def compact_chunk_notes(notes: list[dict], max_chars: int = 48000) -> tuple[str,
         if len(encoded) <= max_chars:
             break
         for item in compact:
+            if item[field]:
+                truncated = True
             item[field] = []
         encoded = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
     if len(encoded) > max_chars:
         for item in compact:
+            if len(item["claims"]) > 1:
+                truncated = True
             item["claims"] = item["claims"][:1]
             if item["claims"]:
+                if len(item["claims"][0]["claim"]) > 100 or len(item["claims"][0]["evidence"]) > 1:
+                    truncated = True
                 item["claims"][0]["claim"] = item["claims"][0]["claim"][:100]
                 item["claims"][0]["evidence"] = item["claims"][0]["evidence"][:1]
         encoded = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
     if len(encoded) > max_chars:
         summary_budget = max(8, (max_chars - len(encoded) + sum(len(x["summary"]) for x in compact)) // len(compact))
         for item in compact:
+            if len(item["summary"]) > summary_budget:
+                truncated = True
             item["summary"] = item["summary"][:summary_budget]
         encoded = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
     stats = {
         "input_chars": source_chars, "output_chars": len(encoded),
         "chunks_included": len(compact), "chunks_total": len(notes),
-        "truncated": len(encoded) < source_chars or any(
-            len(str(original.get("summary") or "")) > len(compacted.get("summary") or "")
-            for original, compacted in zip(notes, compact)),
+        "truncated": truncated,
         "evidence_items": evidence_items,
         "max_chars": max_chars,
     }
