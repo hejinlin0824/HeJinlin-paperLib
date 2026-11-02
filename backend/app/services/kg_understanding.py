@@ -74,14 +74,58 @@ def ensure_tables() -> None:
         c.execute("CREATE INDEX IF NOT EXISTS idx_kg_understanding_paper ON kg_understanding_drafts(paper_id, created_at)")
 
 def _json(raw: str) -> dict | None:
-    if not raw: return None
-    match = re.search(r"\{[\s\S]*\}", raw)
-    if not match: return None
-    try:
-        value = json.loads(match.group(0))
-        return value if isinstance(value, dict) else None
-    except json.JSONDecodeError:
+    """Extract the first complete JSON object without breaking on braces in strings."""
+    if not isinstance(raw, str) or not raw.strip():
         return None
+    text = raw.strip()
+    fence = re.search(r"```(?:json)?\s*([\s\S]*?)\s*```", text, re.I)
+    if fence:
+        text = fence.group(1).strip()
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    value = json.loads(text[start:index + 1])
+                except json.JSONDecodeError:
+                    return None
+                return value if isinstance(value, dict) else None
+    return None
+
+
+def _persist_progress(
+    draft_id: str,
+    model_name: str,
+    payload: dict,
+    warnings: list[str],
+    status: str = "running",
+) -> None:
+    """Persist a safe checkpoint in the isolated V3 table."""
+    with db() as c:
+        c.execute(
+            "UPDATE kg_understanding_drafts SET status=?, model_name=?, payload_json=?, "
+            "warnings_json=?, updated_at=? WHERE id=?",
+            (status, model_name, dumps(payload), dumps(warnings), now(), draft_id),
+        )
 
 def _sections(pid: str) -> list[dict]:
     blocks = rows("SELECT id,type,en FROM blocks WHERE paper_id=? ORDER BY order_idx", (pid,))
@@ -203,48 +247,91 @@ def _normalise_relations(payload: dict, block_map: dict[int,str]) -> list[str]:
     return warnings
 
 async def run_understanding(draft_id: str) -> None:
+    """Run the isolated V3 pipeline and persist checkpoints for diagnosis/retry."""
     ensure_tables()
     draft = row("SELECT * FROM kg_understanding_drafts WHERE id=?", (draft_id,))
-    if not draft: return
+    if not draft:
+        return
+
     pid = draft["paper_id"]
     info = engine_info()
+    model_name = f"{info.get('provider') or 'unknown'}/{info.get('model') or 'unknown'}"
+    partial_payload: dict[str, Any] = {"version": VERSION, "section_map": []}
+    section_notes: list[dict] = []
+    warnings: list[str] = []
+    stage = "engine_check"
+    _persist_progress(draft_id, model_name, partial_payload, warnings)
+
     ok, err = engine_ready(info)
     if not ok:
-        with db() as c: c.execute("UPDATE kg_understanding_drafts SET status='failed',warnings_json=?,updated_at=? WHERE id=?",
-                                  (dumps([f"模型未就绪：{err}"]),now(),draft_id))
+        warnings.append(f"模型未就绪：{err}")
+        _persist_progress(draft_id, model_name, partial_payload, warnings, "failed")
         return
+
     paper = row("SELECT title,title_zh FROM papers WHERE id=?", (pid,))
     if not paper:
-        with db() as c: c.execute("UPDATE kg_understanding_drafts SET status='failed',updated_at=? WHERE id=?",(now(),draft_id))
+        warnings.append("论文记录不存在，无法生成理解档案")
+        _persist_progress(draft_id, model_name, partial_payload, warnings, "failed")
         return
+
     sections = _sections(pid)
     if not sections:
-        with db() as c: c.execute("UPDATE kg_understanding_drafts SET status='failed',warnings_json=?,updated_at=? WHERE id=?",
-                                  (dumps(["没有可用的已解析正文"]),now(),draft_id))
+        warnings.append("没有可用的已解析正文")
+        _persist_progress(draft_id, model_name, partial_payload, warnings, "failed")
         return
+
     title = paper.get("title_zh") or paper.get("title") or "未命名论文"
-    section_notes, warnings = [], [f"章节“{s['title']}”超过单章输入预算，已截断部分正文" for s in sections if s.get("truncated")]
+    partial_payload["paper_title"] = title
+    warnings.extend(
+        f"章节“{section['title']}”超过单章输入预算，已截断部分正文"
+        for section in sections if section.get("truncated")
+    )
+
     try:
-        for i, sec in enumerate(sections):
-            prompt = f"论文：{title}\n章节：{sec['title']}\n" + "\n".join(
-                f"<block id={b['id']}>\n{b['text']}\n</block>" for b in sec["blocks"])
-            result = _json(await chat(info,[{"role":"system","content":SECTION_SYSTEM},{"role":"user","content":prompt}],max_tokens=1800))
-            if not result:
-                warnings.append(f"章节“{sec['title']}”摘要无法解析")
+        # Phase 1: section summaries. A single bad chapter must not erase the others.
+        stage = "section_summary"
+        for section in sections:
+            prompt = f"论文：{title}\n章节：{section['title']}\n" + "\n".join(
+                f"<block id={block['id']}>\n{block['text']}\n</block>"
+                for block in section["blocks"]
+            )
+            try:
+                raw_summary = await chat(
+                    info,
+                    [{"role": "system", "content": SECTION_SYSTEM},
+                     {"role": "user", "content": prompt}],
+                    max_tokens=1800,
+                )
+                result = _json(raw_summary)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "V3 section summary failed: draft_id=%s section=%s error=%s",
+                    draft_id, section["title"], type(exc).__name__,
+                )
+                warnings.append(
+                    f"章节“{section['title']}”摘要请求失败（{type(exc).__name__}）：{str(exc)[:180]}"
+                )
                 continue
-            section_notes.append({"title":sec["title"],**result})
-        # Full-text synthesis uses the section-level map plus bounded original excerpts,
-        # so the model sees cross-section structure without silently truncating one chapter.
-        # Allocate the synthesis excerpt budget across every section. The previous
-        # global [:MAX_INPUT_CHARS] slice silently dropped later sections (often theory/results).
+
+            if not result:
+                warnings.append(f"章节“{section['title']}”摘要未返回合法 JSON")
+                continue
+
+            section_notes.append({"title": section["title"], **result})
+            partial_payload["section_map"] = section_notes
+            partial_payload["progress_stage"] = stage
+            _persist_progress(draft_id, model_name, partial_payload, warnings)
+
+        # Phase 2: balanced excerpts preserve block IDs and both ends of each section.
+        stage = "full_text_synthesis"
         excerpt_parts = []
         per_section_budget = max(1, MAX_INPUT_CHARS // max(1, len(sections)))
         truncated_sections = []
-        for sec in sections:
-            entries = sec["blocks"]
+        for section in sections:
             rendered = [
-                {"header": f"<block id={b['id']} section={sec['title']}>", "text": b["text"]}
-                for b in entries
+                {"header": f"<block id={block['id']} section={section['title']}>",
+                 "text": block["text"]}
+                for block in section["blocks"]
             ]
             full_section = "\n".join(
                 item["header"] + item["text"] + "</block>" for item in rendered
@@ -253,9 +340,8 @@ async def run_understanding(draft_id: str) -> None:
             if len(full_section) <= budget:
                 excerpt_parts.append(full_section)
                 continue
-            truncated_sections.append(sec["title"])
-            # Keep both ends of every section while preserving complete block
-            # identifiers, so evidence references remain attributable.
+
+            truncated_sections.append(section["title"])
             head_budget = max(1, int(budget * 0.55))
             tail_budget = max(1, budget - head_budget)
             head_parts, remaining = [], head_budget
@@ -268,6 +354,7 @@ async def run_understanding(draft_id: str) -> None:
                 if room > 0:
                     head_parts.append(header + piece + "</block>")
                     remaining -= len(header) + len(piece) + len("</block>")
+
             tail_parts, remaining = [], tail_budget
             for item in reversed(rendered):
                 if remaining <= 0:
@@ -279,65 +366,130 @@ async def run_understanding(draft_id: str) -> None:
                     tail_parts.insert(0, header + piece + "</block>")
                     remaining -= len(header) + len(piece) + len("</block>")
             excerpt_parts.append("\n".join(head_parts + tail_parts))
+
         source = "\n".join(excerpt_parts)
         if truncated_sections:
             warnings.append(
                 "全文综合输入预算不足，已按章节均衡保留各章开头与结尾；"
                 "以下章节仍有正文未进入综合输入：" + "、".join(truncated_sections)
             )
+
+        partial_payload["section_map"] = section_notes
+        partial_payload["progress_stage"] = stage
+        _persist_progress(draft_id, model_name, partial_payload, warnings)
         synthesis_prompt = (
-            f"论文标题：{title}\n章节角色与摘要：{json.dumps(section_notes,ensure_ascii=False)}\n"
+            f"论文标题：{title}\n章节角色与摘要：{json.dumps(section_notes, ensure_ascii=False)}\n"
             f"可核验原文块（可能因长度上限未覆盖全文；不可引用未提供内容）：\n{source}\n"
             "请生成全文理解档案。只可引用上述原文块的 block_id 和逐字 quote。"
         )
-        payload = _json(await chat(info,[{"role":"system","content":UNDERSTANDING_SYSTEM},{"role":"user","content":synthesis_prompt}],max_tokens=6500))
-        if not payload: raise RuntimeError("全文理解阶段未返回合法 JSON")
-        payload.setdefault("contributions",[])
-        payload.setdefault("theoretical_framework",[])
-        payload.setdefault("method_architecture",[])
-        payload.setdefault("key_findings",[])
-        payload.setdefault("limitations",[])
-        payload.setdefault("uncertainties",[])
+        raw_payload = await chat(
+            info,
+            [{"role": "system", "content": UNDERSTANDING_SYSTEM},
+             {"role": "user", "content": synthesis_prompt}],
+            max_tokens=6500,
+        )
+        payload = _json(raw_payload)
+        if not payload:
+            raise RuntimeError("全文综合阶段未返回合法 JSON（响应为空、被截断或格式不符合 JSON）")
+
+        for key in ("contributions", "theoretical_framework", "method_architecture",
+                    "key_findings", "limitations", "uncertainties"):
+            payload.setdefault(key, [])
         payload["version"] = VERSION
         payload["paper_title"] = title
         payload["section_map"] = section_notes
         payload["relations"] = []
-        warnings.extend(_validate_evidence(payload,_evidence_index(sections)))
+        payload["progress_stage"] = "evidence_validation"
+        partial_payload = payload
+        _persist_progress(draft_id, model_name, payload, warnings)
+
+        block_map = _evidence_index(sections)
+        warnings.extend(_validate_evidence(payload, block_map))
         warnings.extend(_normalise_contributions(payload))
-        if payload.get("paper_type") not in {"theory","algorithm","system","empirical","survey","other"}:
+        if payload.get("paper_type") not in {
+            "theory", "algorithm", "system", "empirical", "survey", "other"
+        }:
             payload["paper_type"] = "other"
-        # Candidate relations are generated only between contribution-tree nodes,
-        # never by flattening arbitrary section mentions.
+        _persist_progress(draft_id, model_name, payload, warnings)
+
         nodes = payload["contributions"]
         if nodes:
-            rel_prompt = json.dumps({"nodes":[{"id":n.get("id"),"title":n.get("title"),"description":n.get("description"),
-                                                "kind":n.get("kind"),"importance":n.get("importance")} for n in nodes],
-                                     "evidence_blocks":[{"block_id":bid,"text":txt} for bid,txt in _evidence_index(sections).items()]},
-                                    ensure_ascii=False)[:MAX_INPUT_CHARS]
-            rel_result = _json(await chat(info,[{"role":"system","content":"根据贡献树节点生成极少量、方向明确的学术关系候选。只输出 JSON：{\"relations\":[{\"source_id\":\"c1\",\"target_id\":\"c2\",\"relation_type\":\"CONSISTS_OF|SUPPORTS|PROVES|DERIVES|NECESSARY_FOR|SUFFICIENT_FOR|IMPLIES\",\"evidence\":{\"block_id\":123,\"quote\":\"原文逐字摘录\"}}]}。只保留原文明确表达的关系，宁可空数组。"},{"role":"user","content":rel_prompt}],max_tokens=2400))
-            if rel_result:
-                payload["relations"] = rel_result.get("relations",[])[:12]
-        warnings.extend(_normalise_relations(payload,_evidence_index(sections)))
-        # Independent verifier: every candidate relation receives a second semantic check.
-        for rel in payload["relations"]:
-            src, tgt = nodes_by_id(payload).get(rel["source_id"]), nodes_by_id(payload).get(rel["target_id"])
-            verify_prompt = json.dumps({"source":src,"relation":rel["relation_type"],"target":tgt,"quote":rel["evidence"]["quote"]},ensure_ascii=False)
-            verdict = _json(await chat(info,[{"role":"system","content":RELATION_SYSTEM},{"role":"user","content":verify_prompt}],max_tokens=600))
-            if verdict and verdict.get("verdict") in ("entailed","not_entailed","uncertain"):
-                rel["verification"] = verdict["verdict"]
-                rel["reason"] = str(verdict.get("reason") or "")[:500]
+            stage = "relation_candidate_generation"
+            payload["progress_stage"] = stage
+            partial_payload = payload
+            _persist_progress(draft_id, model_name, payload, warnings)
+            relation_prompt = json.dumps(
+                {
+                    "nodes": [
+                        {"id": node.get("id"), "title": node.get("title"),
+                         "description": node.get("description"), "kind": node.get("kind"),
+                         "importance": node.get("importance")}
+                        for node in nodes
+                    ],
+                    "evidence_blocks": [
+                        {"block_id": block_id, "text": text}
+                        for block_id, text in block_map.items()
+                    ],
+                },
+                ensure_ascii=False,
+            )[:MAX_INPUT_CHARS]
+            relation_result = _json(await chat(
+                info,
+                [
+                    {"role": "system", "content":
+                     "根据贡献树节点生成极少量、方向明确的学术关系候选。只输出 JSON："
+                     "{\"relations\":[{\"source_id\":\"c1\",\"target_id\":\"c2\","
+                     "\"relation_type\":\"CONSISTS_OF|SUPPORTS|PROVES|DERIVES|NECESSARY_FOR|"
+                     "SUFFICIENT_FOR|IMPLIES\",\"evidence\":{\"block_id\":123,"
+                     "\"quote\":\"原文逐字摘录\"}}]}。只保留原文明确表达的关系，宁可空数组。"},
+                    {"role": "user", "content": relation_prompt},
+                ],
+                max_tokens=2400,
+            ))
+            if relation_result:
+                payload["relations"] = relation_result.get("relations", [])[:12]
+
+        warnings.extend(_normalise_relations(payload, block_map))
+
+        stage = "relation_verification"
+        payload["progress_stage"] = stage
+        partial_payload = payload
+        _persist_progress(draft_id, model_name, payload, warnings)
+        for relation in payload["relations"]:
+            source_node = nodes_by_id(payload).get(relation["source_id"])
+            target_node = nodes_by_id(payload).get(relation["target_id"])
+            verify_prompt = json.dumps(
+                {"source": source_node, "relation": relation["relation_type"],
+                 "target": target_node, "quote": relation["evidence"]["quote"]},
+                ensure_ascii=False,
+            )
+            verdict = _json(await chat(
+                info,
+                [{"role": "system", "content": RELATION_SYSTEM},
+                 {"role": "user", "content": verify_prompt}],
+                max_tokens=600,
+            ))
+            if verdict and verdict.get("verdict") in ("entailed", "not_entailed", "uncertain"):
+                relation["verification"] = verdict["verdict"]
+                relation["reason"] = str(verdict.get("reason") or "")[:500]
             else:
-                rel["verification"] = "uncertain"
-                rel["reason"] = "语义验证器未能给出有效结论"
-        with db() as c:
-            c.execute("UPDATE kg_understanding_drafts SET status='draft',model_name=?,payload_json=?,warnings_json=?,updated_at=? WHERE id=?",
-                      (f"{info['provider']}/{info['model']}",dumps(payload),dumps(warnings),now(),draft_id))
-    except Exception as exc:
-        logger.exception("V3 paper understanding failed: draft_id=%s paper_id=%s", draft_id, pid)
-        diagnostic = f"V3理解流程失败（{type(exc).__name__}）：{str(exc)[:300]}"
-        with db() as c:
-            c.execute("UPDATE kg_understanding_drafts SET status='failed',warnings_json=?,updated_at=? WHERE id=?",
-                      (dumps(warnings+[diagnostic]),now(),draft_id))
+                relation["verification"] = "uncertain"
+                relation["reason"] = "语义验证器未能给出有效结论"
+            _persist_progress(draft_id, model_name, payload, warnings)
+
+        payload.pop("progress_stage", None)
+        _persist_progress(draft_id, model_name, payload, warnings, "draft")
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "V3 paper understanding failed: draft_id=%s paper_id=%s stage=%s",
+            draft_id, pid, stage,
+        )
+        warnings.append(
+            f"V3理解流程失败，阶段={stage}（{type(exc).__name__}）：{str(exc)[:300]}"
+        )
+        partial_payload["section_map"] = section_notes
+        partial_payload["progress_stage"] = stage
+        _persist_progress(draft_id, model_name, partial_payload, warnings, "failed")
 
 def nodes_by_id(payload: dict) -> dict:
     return {str(n.get("id")):n for n in payload.get("contributions",[]) if n.get("id")}
