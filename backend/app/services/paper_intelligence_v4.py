@@ -284,8 +284,25 @@ def search_approved_graph(query: str, paper_id: str | None = None, top_k: int = 
         # Re-validate evidence at retrieval time; approval never bypasses exact-source checks.
         legacy._validate_evidence(payload, block_map)
         legacy._normalise_contributions(payload)
+        relation_verdicts = {}
+        for edge in payload.get("relations") or []:
+            evidence = edge.get("evidence") or {}
+            key = (str(edge.get("source_id") or ""), str(edge.get("target_id") or ""),
+                   str(edge.get("relation_type") or "").upper(), str(evidence.get("block_id") or ""),
+                   str(evidence.get("quote") or ""))
+            relation_verdicts[key] = edge.get("verification")
+        logic_verdicts = {str(edge.get("id")): edge.get("verification")
+                          for edge in payload.get("theory_logic") or [] if edge.get("id")}
         legacy._normalise_relations(payload, block_map)
+        for edge in payload.get("relations") or []:
+            evidence = edge.get("evidence") or {}
+            key = (str(edge.get("source_id") or ""), str(edge.get("target_id") or ""),
+                   str(edge.get("relation_type") or "").upper(), str(evidence.get("block_id") or ""),
+                   str(evidence.get("quote") or ""))
+            edge["verification"] = relation_verdicts.get(key) or "unverified"
         v31._validate_logic(payload, block_map)
+        for edge in payload.get("theory_logic") or []:
+            edge["verification"] = logic_verdicts.get(str(edge.get("id"))) or "unverified"
         nodes = payload.get("contributions") or []
         by_id = {str(node.get("id")): node for node in nodes if node.get("id")}
         matched = []
@@ -300,7 +317,7 @@ def search_approved_graph(query: str, paper_id: str | None = None, top_k: int = 
         paths = []
         related_ids = set(selected)
         for edge in payload.get("relations") or []:
-            if edge.get("verification") not in {"entailed", "evidence_supported"}:
+            if edge.get("verification") != "entailed":
                 continue
             source, target = str(edge.get("source_id") or ""), str(edge.get("target_id") or "")
             if source in selected or target in selected:
