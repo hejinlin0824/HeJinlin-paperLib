@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.responses import FileResponse
 
 from .config import FRONTEND_DIST, PAPERS_DIR
-from .db import init_db
+from .db import init_db\nfrom .util import now
 from .routers import annotations, dict, kg, kg_understanding, log, papers, questions, settings
 
 app = FastAPI(title="论文图书馆", version="0.1.0")
@@ -58,6 +58,12 @@ if (FRONTEND_DIST / "index.html").exists():
 @app.on_event("startup")
 def _startup():
     init_db()
+    # V3 理解任务也需要在异常退出后恢复，避免草稿永久停留在 running。
+    from .services import kg_understanding
+    kg_understanding.ensure_tables()
+    from .db import db as _db
+    with _db() as c:
+        c.execute("UPDATE kg_understanding_drafts SET status='failed', warnings_json=?, updated_at=? WHERE status='running'", ('["服务重启导致任务中断，请重新生成理解档案"]', now()))")
     # 僵尸任务恢复：进程刚启动，不可能有正在运行的任务；
     # 把上次服务退出时卡住的翻译/解析状态复位，让用户可以重新触发
     from .db import db
