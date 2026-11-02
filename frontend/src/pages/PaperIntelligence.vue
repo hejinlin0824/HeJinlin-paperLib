@@ -184,6 +184,7 @@ onMounted(async () => {
           <div><strong>{{ payload.pipeline?.llm_operations ?? 0 }}</strong><small>LLM 阶段调用</small></div>
         </div>
         <p class="hint">覆盖率只表示成功完成分析的分块正文比例，不等同于语义正确率。未核验关系不会自动视为成立。</p>
+        <p v-if="payload.coverage?.not_attempted_chunks" class="hint">尚未尝试分析：{{ payload.coverage.not_attempted_chunks }} 个分块（模型未就绪或未启动分析），不计入失败分块。</p>
         <h3>核心问题</h3><p>{{ payload.problem || '尚未提取' }}</p>
         <h3>核心主张</h3><p>{{ payload.thesis || '尚未提取' }}</p>
         <h3>贡献树 / 结构候选</h3>
