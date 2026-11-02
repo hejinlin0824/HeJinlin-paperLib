@@ -23,14 +23,14 @@ from typing import Any
 from ..db import db, row, rows
 from ..util import dumps, loads, now
 
-TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_+.-]*|\\d+(?:\\.\\d+)?|[\\u3400-\\u9fff]{2,}")
+TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9_+.-]*|\d+(?:\.\d+)?|[\u3400-\u9fff]{2,}")
 ACADEMIC_PATTERNS = [
-    ("definition", re.compile(r"\\b(definition|defined as|we define|is defined as)\\b|定义为|定义如下", re.I)),
-    ("assumption", re.compile(r"\\b(assumption|assume that|under the assumption)\\b|假设", re.I)),
-    ("theorem", re.compile(r"\\b(theorem|proposition|lemma|corollary)\\b|定理|命题|引理|推论", re.I)),
-    ("condition", re.compile(r"\\b(necessary condition|sufficient condition|if and only if|iff|necessary and sufficient)\\b|必要条件|充分条件|当且仅当", re.I)),
-    ("proof", re.compile(r"\\b(proof|we prove|it follows that)\\b|证明", re.I)),
-    ("limitation", re.compile(r"\\b(limitation|however,|we leave .* for future work)\\b|局限|未来工作", re.I)),
+    ("definition", re.compile(r"\b(definition|defined as|we define|is defined as)\b|定义为|定义如下", re.I)),
+    ("assumption", re.compile(r"\b(assumption|assume that|under the assumption)\b|假设", re.I)),
+    ("theorem", re.compile(r"\b(theorem|proposition|lemma|corollary)\b|定理|命题|引理|推论", re.I)),
+    ("condition", re.compile(r"\b(necessary condition|sufficient condition|if and only if|iff|necessary and sufficient)\b|必要条件|充分条件|当且仅当", re.I)),
+    ("proof", re.compile(r"\b(proof|we prove|it follows that)\b|证明", re.I)),
+    ("limitation", re.compile(r"\b(limitation|however,|we leave .* for future work)\b|局限|未来工作", re.I)),
 ]
 DEFAULT_TOP_K = 8
 
@@ -38,7 +38,7 @@ DEFAULT_TOP_K = 8
 def tokenize(text: str) -> list[str]:
     tokens: list[str] = []
     for token in TOKEN_RE.findall((text or "").lower()):
-        if re.fullmatch(r"[\\u3400-\\u9fff]{2,}", token):
+        if re.fullmatch(r"[\u3400-\u9fff]{2,}", token):
             tokens.extend(token[i:i + 2] for i in range(len(token) - 1))
         else:
             tokens.append(token)
