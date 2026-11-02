@@ -252,7 +252,9 @@ async def run_understanding(draft_id: str) -> None:
         payload["section_map"] = section_map
         payload["progress_stage"] = "paper_synthesis"
         legacy._persist_progress(draft_id, model_name, payload, warnings)
-        # Deterministic local compaction; no LLM compression request is required.\n        compact_notes = _compact_notes_deterministic(notes)\n        payload["progress_stage"] = "contribution_synthesis"
+        # Deterministic local compaction; no LLM compression request is required.
+        compact_notes = _compact_notes_deterministic(notes)
+        payload["progress_stage"] = "contribution_synthesis"
         legacy._persist_progress(draft_id, model_name, payload, warnings)
         result = legacy._json(await chat(info, [
             {"role": "system", "content": SYNTHESIS_SYSTEM},
