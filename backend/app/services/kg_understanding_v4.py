@@ -229,10 +229,9 @@ async def run_understanding(draft_id: str) -> None:
                     if len(indexes) > 1:
                         try:
                             raw = await _chat_v4(info, [
-                                {"role": "system", "content": v31.CHUNK_SYSTEM + "\\n\\n批量模式：每个 <chunk id> 是独立任务。"
-                                 "严格返回 {\\\"chunks\\\":[{\\\"chunk_id\\\":整数,\\\"section_role\\\":...,"
-                                 "\\\"summary\\\":...,\\\"claims\\\":...,\\\"argument_steps\\\":...,"
-                                 "\\\"candidate_contributions\\\":...,\\\"open_questions\\\":...}]}。"},
+                                {"role": "system", "content": v31.CHUNK_SYSTEM + "\n\n批量模式：每个 <chunk id> 是独立任务。"
+                                 '严格返回 {"chunks":[{"chunk_id":整数,"section_role":...,"summary":...,'
+                                 '"claims":...,"argument_steps":...,"candidate_contributions":...,"open_questions":...}]}。'},
                                 {"role": "user", "content": _batch_chunk_prompt(title, batch_number, indexes, chunks)},
                             ], max_tokens=min(6600, 2200 * len(indexes)))
                             batch_notes = _normalise_batch_notes(raw, indexes, chunks)
