@@ -143,12 +143,18 @@ async def run_understanding(draft_id: str) -> None:
             async def analyze_chunk(index: int, chunk: dict):
                 async with semaphore:
                     try:
-                        result = legacy._json(await _chat_v4(info, [
+                        raw_response = await _chat_v4(info, [
                             {"role": "system", "content": v31.CHUNK_SYSTEM},
                             {"role": "user", "content": v31._chunk_prompt(title, chunk)},
-                        ], max_tokens=2200))
+                        ], max_tokens=2200)
+                        result = legacy._json(raw_response)
                         if not result:
-                            raise RuntimeError("模型未返回合法 JSON")
+                            preview = re.sub(r"\\s+", " ", str(raw_response or "")).strip()[:180]
+                            raise RuntimeError(
+                                "模型未返回合法 JSON；"
+                                f"response_chars={len(str(raw_response or ''))}; "
+                                f"response_preview={preview!r}"
+                            )
                         note = {"title": chunk["section"], "chunk_index": chunk["chunk_index"],
                                 "section_index": chunk["section_index"], **result}
                         return index, note, None
