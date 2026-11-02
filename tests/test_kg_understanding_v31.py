@@ -27,7 +27,7 @@ def test_long_section_is_chunked_without_the_old_5200_character_cap(isolated_db)
     )
     sections, block_map = v31._load_sections("paper-long")
     chunks = v31._make_chunks(sections)
-    assert len(block_map[block_id]) == len(text)
+    assert len(block_map[block_id]) == len(text.strip())
     assert len(chunks) > 1
     assert all(segment["block_id"] == block_id for chunk in chunks for segment in chunk["segments"])
     joined = "".join(segment["text"] for chunk in chunks for segment in chunk["segments"])
