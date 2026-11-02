@@ -10,7 +10,10 @@ from typing import Any
 from ..db import db, row
 from ..util import now
 from . import kg_understanding as legacy
-from . import kg_understanding_v31 as v31
+from .paper_understanding_common import (
+    CHUNK_SYSTEM, SYNTHESIS_SYSTEM, _chunk_prompt, _load_sections, _make_chunks,
+    _validate_logic, compact_chunk_notes,
+)
 from . import paper_intelligence_v4 as intelligence
 from .translate import chat, engine_info, engine_ready
 
@@ -69,27 +72,9 @@ async def _chat_v4(info: dict, messages: list, max_tokens: int):
     return await chat(info, messages, max_tokens=max_tokens, timeout_seconds=90, retries=2)
 
 
-def _compact_notes(notes: list[dict]) -> str:
-    """Deterministic compression: never invokes a model and never cuts evidence quotes."""
-    compact = []
-    for note in notes:
-        claims = []
-        for claim in (note.get("claims") or [])[:8]:
-            if not isinstance(claim, dict):
-                continue
-            evidence = [e for e in (claim.get("evidence") or [])[:2]
-                        if isinstance(e, dict) and e.get("block_id") and e.get("quote")]
-            claims.append({"claim": str(claim.get("claim") or "")[:500],
-                           "kind": claim.get("kind"), "evidence": evidence})
-        compact.append({
-            "title": note.get("title"), "section_role": note.get("section_role"),
-            "summary": str(note.get("summary") or "")[:900],
-            "claims": claims,
-            "argument_steps": [str(x)[:350] for x in (note.get("argument_steps") or [])[:8]],
-            "candidate_contributions": [str(x)[:300] for x in (note.get("candidate_contributions") or [])[:5]],
-            "open_questions": [str(x)[:250] for x in (note.get("open_questions") or [])[:4]],
-        })
-    return json.dumps(compact, ensure_ascii=False)
+def _compact_notes(notes: list[dict], max_chars: int = 48000) -> tuple[str, dict]:
+    """Bounded local compaction; preserves a compact record for every analyzed chunk."""
+    return compact_chunk_notes(notes, max_chars=max_chars)
 
 
 CHUNK_BATCH_MAX_CHARS = 11800
@@ -102,7 +87,7 @@ def _build_chunk_batches(chunks: list[dict]) -> list[list[int]]:
     current: list[int] = []
     current_chars = 0
     for index, chunk in enumerate(chunks):
-        prompt_chars = len(v31._chunk_prompt("", chunk))
+        prompt_chars = len(_chunk_prompt("", chunk))
         if current and (len(current) >= CHUNK_BATCH_MAX_ITEMS
                         or current_chars + prompt_chars > CHUNK_BATCH_MAX_CHARS):
             batches.append(current)
@@ -118,7 +103,7 @@ def _batch_chunk_prompt(title: str, batch_id: int, indexes: list[int], chunks: l
     parts = [f"论文：{title}", f"本请求包含 {len(indexes)} 个独立片段。必须逐个分析，不能跨片段合并证据。"]
     for index in indexes:
         chunk = chunks[index]
-        parts.append(f"<chunk id=\"{index}\">\n{v31._chunk_prompt(title, chunk)}\n</chunk>")
+        parts.append(f"<chunk id=\"{index}\">\n{_chunk_prompt(title, chunk)}\n</chunk>")
     parts.append(
         '只输出 JSON：{"chunks":[{"chunk_id":0,"section_role":"...","summary":"...",'
         '"claims":[],"argument_steps":[],"candidate_contributions":[],"open_questions":[]}]}。'
@@ -181,8 +166,8 @@ async def run_understanding(draft_id: str) -> None:
             candidates = []
             warnings.append(f"规则候选提取不可用，继续主流程：{type(exc).__name__}")
         payload["pipeline"]["rule_candidates"] = len(candidates)
-        sections, block_map = v31._load_sections(draft["paper_id"])
-        chunks = v31._make_chunks(sections)
+        sections, block_map = _load_sections(draft["paper_id"])
+        chunks = _make_chunks(sections)
         if not chunks:
             raise ValueError("没有可分析的正文分块")
         total_chars = sum(len(x["text"]) for section in sections for x in section["blocks"])
@@ -206,8 +191,8 @@ async def run_understanding(draft_id: str) -> None:
             async def analyze_single(index: int):
                 chunk = chunks[index]
                 raw_response = await _chat_v4(info, [
-                    {"role": "system", "content": v31.CHUNK_SYSTEM},
-                    {"role": "user", "content": v31._chunk_prompt(title, chunk)},
+                    {"role": "system", "content": CHUNK_SYSTEM},
+                    {"role": "user", "content": _chunk_prompt(title, chunk)},
                 ], max_tokens=2200)
                 result = legacy._json(raw_response)
                 if not result:
@@ -226,7 +211,7 @@ async def run_understanding(draft_id: str) -> None:
                     if len(indexes) > 1:
                         try:
                             raw = await _chat_v4(info, [
-                                {"role": "system", "content": v31.CHUNK_SYSTEM + "\n\n批量模式：每个 <chunk id> 是独立任务。"
+                                {"role": "system", "content": CHUNK_SYSTEM + "\n\n批量模式：每个 <chunk id> 是独立任务。"
                                  '严格返回 {"chunks":[{"chunk_id":整数,"section_role":...,"summary":...,'
                                  '"claims":...,"argument_steps":...,"candidate_contributions":...,"open_questions":...}]}。'},
                                 {"role": "user", "content": _batch_chunk_prompt(title, batch_number, indexes, chunks)},
@@ -287,13 +272,14 @@ async def run_understanding(draft_id: str) -> None:
         legacy._persist_progress(draft_id, model_name, payload, warnings)
         if ready and notes:
             # No LLM summary-compression stage. Deterministically compact complete note objects.
-            compact_notes = _compact_notes(notes)
+            compact_notes, compact_stats = _compact_notes(notes)
+            payload["pipeline"]["synthesis_input"] = compact_stats
             synthesis_started = time.perf_counter()
             try:
                 payload["pipeline"]["llm_operations"] += 1
                 result = legacy._json(await _chat_v4(info, [
-                    {"role": "system", "content": v31.SYNTHESIS_SYSTEM},
-                    {"role": "user", "content": f"论文标题：{title}\n章节分块分析（证据均带 block_id）：\n{compact_notes}"},
+                    {"role": "system", "content": SYNTHESIS_SYSTEM},
+                    {"role": "user", "content": f"论文标题：{title}\n章节分块分析（证据均带 block_id；共 {compact_stats['chunks_included']} 个分块）：\n{compact_notes}"},
                 ], max_tokens=7500))
                 if not result:
                     raise RuntimeError("论文综合阶段未返回合法 JSON")
@@ -338,7 +324,7 @@ async def run_understanding(draft_id: str) -> None:
         if payload.get("paper_type") not in {"theory", "algorithm", "system", "empirical", "survey", "other"}:
             payload["paper_type"] = "other"
         warnings.extend(legacy._normalise_relations(payload, block_map))
-        warnings.extend(v31._validate_logic(payload, block_map))
+        warnings.extend(_validate_logic(payload, block_map))
         # Verify all candidate edges in one bounded request, not one request per edge.
         node_map = legacy.nodes_by_id(payload)
         edges = []
