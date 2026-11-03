@@ -111,17 +111,22 @@ catch {
 }
 finally {
     $finished = Get-Date
-    [ordered]@{
+    $branchValue = $null
+    $headValue = $null
+    if ($branch) { $branchValue = $branch }
+    if ($head) { $headValue = $head }
+    $summary = [ordered]@{
         project = "HeJinlin-paperLib"
-        branch = if ($branch) { $branch } else { $null }
-        head = if ($head) { $head } else { $null }
+        branch = $branchValue
+        head = $headValue
         test_scope = "synthetic unit contracts + full backend regression + frontend tests/build + optional Windows launcher preflight; no real paper/model calls"
         started_at = $started.ToString("o")
         finished_at = $finished.ToString("o")
         duration_seconds = [math]::Round(($finished - $started).TotalSeconds, 2)
         results = $results
         exit_code = $exitCode
-    } | ConvertTo-Json -Depth 8 | Set-Content -Path $summaryPath -Encoding UTF8
+    }
+    $summary | ConvertTo-Json -Depth 8 | Set-Content -Path $summaryPath -Encoding UTF8
 
     Write-Host ""
     Write-Host "One-click summary: $summaryPath"
