@@ -104,11 +104,24 @@ try {
         Invoke-TestStep "Windows launcher build preflight" {
             $oldNoBrowser = $env:PAPERLIB_NO_BROWSER
             $oldBuildOnly = $env:PAPERLIB_BUILD_ONLY
+            $launcherSource = Join-Path $root "启动.bat"
+            # cmd.exe may decode a Chinese batch filename through the active OEM
+            # code page when PowerShell 5.1 passes it on the command line.
+            # Execute an exact byte-for-byte ASCII-named copy from the repository
+            # root instead; the launcher's %~dp0 and relative paths still resolve
+            # to the same project directory.
+            $launcherAliasName = ".paperlib-launcher-preflight-$([guid]::NewGuid().ToString('N')).cmd"
+            $launcherAliasPath = Join-Path $root $launcherAliasName
             try {
+                if (-not (Test-Path -LiteralPath $launcherSource -PathType Leaf)) {
+                    throw "Windows launcher not found: $launcherSource"
+                }
+                Copy-Item -LiteralPath $launcherSource -Destination $launcherAliasPath
                 $env:PAPERLIB_NO_BROWSER = "1"
                 $env:PAPERLIB_BUILD_ONLY = "1"
-                & $env:ComSpec /c "启动.bat"
+                & $env:ComSpec /d /c $launcherAliasName
             } finally {
+                Remove-Item -LiteralPath $launcherAliasPath -Force -ErrorAction SilentlyContinue
                 if ($null -eq $oldNoBrowser) { Remove-Item Env:PAPERLIB_NO_BROWSER -ErrorAction SilentlyContinue }
                 else { $env:PAPERLIB_NO_BROWSER = $oldNoBrowser }
                 if ($null -eq $oldBuildOnly) { Remove-Item Env:PAPERLIB_BUILD_ONLY -ErrorAction SilentlyContinue }
