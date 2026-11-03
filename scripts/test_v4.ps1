@@ -104,18 +104,27 @@ try {
         Invoke-TestStep "Windows launcher build preflight" {
             $oldNoBrowser = $env:PAPERLIB_NO_BROWSER
             $oldBuildOnly = $env:PAPERLIB_BUILD_ONLY
-            $launcherSource = Join-Path $root "启动.bat"
-            # cmd.exe may decode a Chinese batch filename through the active OEM
-            # code page when PowerShell 5.1 passes it on the command line.
+            # Avoid non-ASCII literals in this script: Windows PowerShell 5.1
+            # may decode UTF-8-without-BOM source as the active ANSI code page.
+            # Identify the launcher by its stable ASCII content markers instead
+            # of spelling its Chinese filename in the script.
+            $launcherCandidates = @(
+                Get-ChildItem -LiteralPath $root -File -Filter "*.bat" |
+                    Where-Object {
+                        $content = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::Default)
+                        $content.Contains("PAPERLIB_BUILD_ONLY") -and
+                        $content.Contains("Production launcher")
+                    }
+            )
+            if ($launcherCandidates.Count -ne 1) {
+                throw "Expected exactly one production launcher batch file, found $($launcherCandidates.Count)."
+            }
+            $launcherSource = $launcherCandidates[0].FullName
             # Execute an exact byte-for-byte ASCII-named copy from the repository
-            # root instead; the launcher's %~dp0 and relative paths still resolve
-            # to the same project directory.
+            # root; the launcher's %~dp0 and relative paths still resolve there.
             $launcherAliasName = ".paperlib-launcher-preflight-$([guid]::NewGuid().ToString('N')).cmd"
             $launcherAliasPath = Join-Path $root $launcherAliasName
             try {
-                if (-not (Test-Path -LiteralPath $launcherSource -PathType Leaf)) {
-                    throw "Windows launcher not found: $launcherSource"
-                }
                 Copy-Item -LiteralPath $launcherSource -Destination $launcherAliasPath
                 $env:PAPERLIB_NO_BROWSER = "1"
                 $env:PAPERLIB_BUILD_ONLY = "1"
