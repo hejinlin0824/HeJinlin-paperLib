@@ -93,6 +93,25 @@ export const api = {
   kgV3Understand: (paperId) => request(`/api/knowledge-graph/v3/papers/${paperId}/understand`, { method: 'POST' }),
   kgV3Save: (id, payload) => request(`/api/knowledge-graph/v3/drafts/${id}`, { method: 'PUT', body: { payload } }),
   kgV3Review: (id, status, payload) => request(`/api/knowledge-graph/v3/drafts/${id}/review`, { method: 'POST', body: { status, payload } }),
+  // V4：本地优先的混合论文理解与检索
+  kgV4Drafts: (paperId) => request('/api/knowledge-graph/v4/drafts' + (paperId ? '?paper_id=' + encodeURIComponent(paperId) : '')),
+  kgV4Draft: (id) => request(`/api/knowledge-graph/v4/drafts/${id}`),
+  kgV4Understand: (paperId) => request(`/api/knowledge-graph/v4/papers/${paperId}/understand`, { method: 'POST' }),
+  kgV4Index: (paperId, include_embeddings = false) => request(`/api/knowledge-graph/v4/papers/${paperId}/index`, { method: 'POST', body: { include_embeddings } }),
+  kgV4IndexStatus: (paperId) => request(`/api/knowledge-graph/v4/papers/${paperId}/index`),
+  kgV4GraphContext: (q, paperId, topK = 10) => {
+    const params = new URLSearchParams({ q, top_k: String(topK) })
+    if (paperId) params.set('paper_id', paperId)
+    return request('/api/knowledge-graph/v4/graph-context?' + params.toString())
+  },
+  kgV4Search: (q, paperId, topK = 8) => {
+    const params = new URLSearchParams({ q, top_k: String(topK) })
+    if (paperId) params.set('paper_id', paperId)
+    return request('/api/knowledge-graph/v4/search?' + params.toString())
+  },
+  kgV4Candidates: (paperId) => request(`/api/knowledge-graph/v4/papers/${paperId}/structure-candidates`),
+  kgV4Save: (id, payload) => request(`/api/knowledge-graph/v4/drafts/${id}`, { method: 'PUT', body: { payload } }),
+  kgV4Review: (id, status, payload) => request(`/api/knowledge-graph/v4/drafts/${id}/review`, { method: 'POST', body: { status, payload } }),
 }
 
 export default api

@@ -30,6 +30,21 @@
 
 打开 `http://127.0.0.1:8300/kg-understanding`，选择已解析论文生成全文理解档案、贡献树和关系语义核验结果。V3 草稿与旧图谱隔离，确认/驳回不会改写旧节点和关系。详细说明见 [docs/知识图谱V3论文理解与贡献树.md](docs/知识图谱V3论文理解与贡献树.md)。建议先单篇试跑，避免一次性触发全库模型调用。
 
+## V4 Hybrid Paper Intelligence：混合论文理解
+
+V4 工作台：打开 `http://127.0.0.1:8300/kg-intelligence`。它在 V3 草稿流程之外增加本地 Block 级 BM25 检索、可选本地 BGE-M3 向量检索、可选 GLiNER 学术实体候选识别、已审核 V4 图谱上下文检索，以及失败可恢复的论文理解流程。默认不下载模型、不调用向量云服务；未配置本地模型时使用纯 SQLite 词法检索。
+
+V4 详情、可选模型配置、API 和验收说明见 [docs/V4-Hybrid-Paper-Intelligence.md](docs/V4-Hybrid-Paper-Intelligence.md)。Windows 本地验收：
+
+```powershell
+git switch feat/paper-intelligence-v4
+git pull --ff-only origin feat/paper-intelligence-v4
+Set-ExecutionPolicy -Scope Process Bypass
+.\test-v4-quality.ps1
+```
+
+V4 新草稿使用版本号 4.0，仍存放在隔离草稿表；确认档案不会自动写入旧知识图谱。V3.0/V3.1 历史草稿和正式论文库均保留。
+
 ## 数据在哪
 
 全部在项目下的 `data/` 目录（SQLite + PDF + 图片）：

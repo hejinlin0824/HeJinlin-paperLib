@@ -8,6 +8,7 @@ on:
     branches:
       - main
       - "feature/**"
+      - "feat/**"
       - "fix/**"
   workflow_dispatch:
 
@@ -40,6 +41,8 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - name: Install backend dependencies
         run: python -m pip install -r backend/requirements.txt -r backend/requirements-dev.txt
+      - name: Run synthetic document/schema/evaluation unit contracts
+        run: pytest -q tests/test_document_and_eval_contracts.py
       - name: Run backend regression tests
         run: pytest -q tests/
       - name: Install frontend dependencies
@@ -72,6 +75,19 @@ jobs:
       - name: Install frontend dependencies
         working-directory: frontend
         run: npm ci
+      - name: Run the one-command Windows regression script
+        shell: pwsh
+        run: ./scripts/test_v4.ps1 -InstallDependencies
+      - name: Validate the one-click PowerShell entrypoint syntax
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $parseErrors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("$PWD/scripts/一键测试.ps1", [ref]$tokens, [ref]$parseErrors) | Out-Null
+          if ($parseErrors.Count -gt 0) {
+            $parseErrors | ForEach-Object { Write-Error $_.Message }
+            throw "One-click test script contains PowerShell syntax errors."
+          }
       - name: Smoke test the Windows production launcher and server
         shell: pwsh
         run: |

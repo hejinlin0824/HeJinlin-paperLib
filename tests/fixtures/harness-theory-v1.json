@@ -1,0 +1,34 @@
+{
+  "benchmark_id": "paperlib-harness-theory-v1",
+  "paper_title": "What Makes an Agent Harness? Necessary and Sufficient Conditions for Agent Harnesses",
+  "paper_type": "theory",
+  "expected_concepts": [
+    "agent loop",
+    "tool interface",
+    "context management",
+    "control mechanisms",
+    "constitutive definition",
+    "necessary conditions",
+    "joint sufficiency",
+    "inclusion exclusion tests",
+    "agent framework boundary",
+    "agent SDK boundary",
+    "IDE plugin boundary",
+    "evaluation harness boundary",
+    "orchestrator boundary",
+    "four design tension axes"
+  ],
+  "expected_negative_cases": [
+    "A user interface is not a necessary condition",
+    "A single condition must not be labeled jointly sufficient",
+    "An evaluation harness is not automatically a runtime agent harness",
+    "A fixed orchestration graph is not automatically an adaptive agent loop"
+  ],
+  "required_evidence_contract": {
+    "every_claim_has_block_id": true,
+    "every_quote_is_verbatim": true,
+    "joint_sufficiency_has_multiple_premises": true,
+    "unverified_relations_are_not_auto_approved": true
+  },
+  "note": "Targets are based on the user's supplied paper summary. Confirm exact statements and quotations against the original PDF before treating this fixture as a gold semantic annotation."
+}

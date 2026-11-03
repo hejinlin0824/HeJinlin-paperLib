@@ -88,7 +88,9 @@ def _clean(text: str) -> str:
     return t.replace("\ufffd", "").strip()
 
 
-async def chat(info: dict, messages: list, max_tokens: int | None = None) -> str:
+async def chat(info: dict, messages: list, max_tokens: int | None = None,
+               timeout_seconds: int = 180, retries: int = 3,
+               response_format: dict | None = None) -> str:
     """调用 OpenAI 兼容 /chat/completions。
 
     某些推理模型会把 max_tokens 预算优先用于 reasoning，导致 message.content 为空。
@@ -101,28 +103,34 @@ async def chat(info: dict, messages: list, max_tokens: int | None = None) -> str
             "temperature": info["temperature"]}
     if max_tokens:
         body["max_tokens"] = max_tokens
+    if response_format is not None:
+        body["response_format"] = response_format
     headers = {"Content-Type": "application/json"}
     if info["api_key"]:
         headers["Authorization"] = f"Bearer {info['api_key']}"
     last_err = None
     retry_without_token_limit = False
-    for attempt in range(3):
+    retries = max(1, int(retries))
+    attempts_made = 0
+    for attempt in range(retries):
+        attempts_made = attempt + 1
         request_body = dict(body)
         if retry_without_token_limit:
             request_body.pop("max_tokens", None)
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(180)) as c:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds)) as c:
                 r = await c.post(f"{info['base_url']}/chat/completions",
                                  headers=headers, json=request_body)
             if r.status_code in (429, 500, 502, 503, 504):
-                last_err = RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
+                last_err = f"HTTP {r.status_code}: {r.text[:300] or '服务端未提供错误正文'}"
             else:
                 r.raise_for_status()
                 data = r.json()
                 choices = data.get("choices") or []
                 if not choices:
-                    last_err = RuntimeError(
-                        f"模型响应缺少 choices；响应字段={list(data.keys())[:12]}")
+                    last_err = (
+                        f"模型响应缺少 choices；HTTP {r.status_code}；"
+                        f"响应字段={list(data.keys())[:12]}")
                 else:
                     choice = choices[0] or {}
                     msg = choice.get("message") or {}
@@ -138,7 +146,7 @@ async def chat(info: dict, messages: list, max_tokens: int | None = None) -> str
                         return _clean(content)
                     reasoning = msg.get("reasoning_content") or msg.get("reasoning") or ""
                     usage = data.get("usage") or {}
-                    last_err = RuntimeError(
+                    last_err = (
                         "模型返回空正文；"
                         f"finish_reason={choice.get('finish_reason')!r}, "
                         f"reasoning_chars={len(str(reasoning))}, "
@@ -147,11 +155,26 @@ async def chat(info: dict, messages: list, max_tokens: int | None = None) -> str
                     )
                     if "max_tokens" in request_body:
                         retry_without_token_limit = True
-        except Exception as e:  # noqa: BLE001
-            last_err = e
-        if attempt < 2:
+        except httpx.HTTPStatusError as exc:
+            response = exc.response
+            status = response.status_code if response is not None else "unknown"
+            detail = (response.text[:300] if response is not None else "") or "服务端未提供错误正文"
+            last_err = f"HTTP {status}: {detail}"
+            # 参数、鉴权、模型名等 4xx 属于配置/请求错误，重复请求不会修复。
+            retryable = status in (408, 409, 425, 429)
+            if not retryable:
+                raise RuntimeError(f"模型请求失败（HTTP {status}，不重试）：{detail}") from exc
+        except httpx.TimeoutException as exc:
+            last_err = f"{type(exc).__name__}: 请求超时（timeout={timeout_seconds}s）"
+        except httpx.TransportError as exc:
+            detail = str(exc).strip() or repr(exc)
+            last_err = f"{type(exc).__name__}: {detail}"
+        except Exception as exc:  # noqa: BLE001
+            detail = str(exc).strip() or repr(exc)
+            last_err = f"{type(exc).__name__}: {detail}"
+        if attempt < retries - 1:
             await asyncio.sleep(2 * (attempt + 1))
-    raise RuntimeError(f"模型请求失败（已尝试3次）：{last_err}")
+    raise RuntimeError(f"模型请求失败（已尝试{attempts_made}次）：{last_err or '未知异常（未捕获到错误详情）'}")
 
 
 def _glossary_text() -> str:

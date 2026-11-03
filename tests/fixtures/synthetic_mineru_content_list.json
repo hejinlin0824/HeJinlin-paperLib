@@ -1,0 +1,11 @@
+[
+  {"type":"text","text":"Synthetic paper title","text_level":1,"page_idx":0,"bbox":[10,10,500,40]},
+  {"type":"text","text":"Abstract. We study a small synthetic system.","page_idx":0,"bbox":[10,50,500,90]},
+  {"type":"text","text":"Definition 1. A widget is a deterministic test object.","page_idx":1,"bbox":[10,60,500,100]},
+  {"type":"equation","text":"$$x^2 + y^2 = z^2$$","page_idx":1,"bbox":[30,110,300,140]},
+  {"type":"table","table_caption":["Table 1. Synthetic values"],"table_body":"<table><tr><td>A</td><td>B</td></tr></table>","page_idx":1,"bbox":[10,150,500,240]},
+  {"type":"image","img_caption":["Figure 1. Synthetic pipeline"],"img_path":"images/figure-1.png","page_idx":2,"bbox":[10,30,500,250]},
+  {"type":"text","text":"1 This is a footnote and should be removed.","page_idx":2,"bbox":[10,700,500,720]},
+  {"type":"text","text":"References","text_level":1,"page_idx":3,"bbox":[10,30,500,50]},
+  {"type":"text","text":"[1] A. Author. A synthetic reference.","page_idx":3,"bbox":[10,60,500,80]}
+]

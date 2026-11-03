@@ -1,0 +1,22 @@
+{
+  "fixture_id": "synthetic-paper-v1",
+  "paper_type": "theory",
+  "expected_concepts": ["deterministic test object", "joint sufficiency"],
+  "expected_negative_cases": ["A diagram caption is not a theorem statement"],
+  "questions": [
+    "What is the formal definition?",
+    "What are the sufficient conditions?"
+  ],
+  "answers": [
+    "The paper defines a widget as a deterministic test object.",
+    "The two stated conditions jointly suffice for the synthetic result."
+  ],
+  "contexts": [
+    ["Definition 1. A widget is a deterministic test object."],
+    ["Condition A and Condition B jointly imply the synthetic result."]
+  ],
+  "ground_truths": [
+    "A widget is a deterministic test object.",
+    "Conditions A and B jointly imply the synthetic result."
+  ]
+}

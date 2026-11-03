@@ -103,3 +103,85 @@ def test_new_draft_uses_v31_and_keeps_legacy_graph_isolated(isolated_db):
     assert v31.get_draft(draft["id"])["version"] == "3.1"
     assert app_db.row("SELECT COUNT(*) n FROM kg_entities")["n"] == 0
     assert app_db.row("SELECT COUNT(*) n FROM kg_relations")["n"] == 0
+
+def test_v31_compaction_is_local_and_preserves_evidence_quotes():
+    note = {"title": "Theory", "section_role": "theory", "summary": "Summary",
+            "claims": [{"claim": "T1 is necessary", "kind": "condition",
+                        "evidence": [{"block_id": 4, "quote": "T1 is necessary for the definition."}]}],
+            "argument_steps": ["Removing T1 breaks the definition."]}
+    first = v31._compact_notes_deterministic([note])
+    second = v31._compact_notes_deterministic([note])
+    assert first == second
+    assert '"block_id": 4' in first
+    assert '"T1 is necessary for the definition."' in first
+
+
+def test_v31_pipeline_executes_deterministic_compaction_before_synthesis(isolated_db, monkeypatch):
+    from app.util import now
+    import asyncio
+    import json
+
+    app_db.ex(
+        "INSERT INTO papers(id,title,status,created_at,updated_at) VALUES(?,?,?,?,?)",
+        ("paper-v31-compaction", "A harness theory paper", "ready", now(), now()),
+    )
+    block_id = app_db.ex(
+        "INSERT INTO blocks(paper_id,order_idx,type,en) VALUES(?,?,?,?)",
+        ("paper-v31-compaction", 0, "text",
+         "An agent harness is defined by necessary conditions and a joint sufficiency claim."),
+    )
+    app_db.ex(
+        "INSERT INTO sections(paper_id,title,title_en,block_start,order_idx,skip) VALUES(?,?,?,?,?,?)",
+        ("paper-v31-compaction", "Constitutive Definition", "Constitutive Definition", block_id, 0, 0),
+    )
+    draft = v31.create_draft("paper-v31-compaction")
+    monkeypatch.setattr(v31, "engine_info", lambda: {"provider": "custom", "model": "test"})
+    monkeypatch.setattr(v31, "engine_ready", lambda _info: (True, ""))
+
+    chunk_result = {
+        "section_role": "theory",
+        "summary": "The paper defines an agent harness.",
+        "claims": [{
+            "claim": "An agent harness is defined by necessary conditions.",
+            "kind": "definition",
+            "evidence": [{
+                "block_id": block_id,
+                "quote": "An agent harness is defined by necessary conditions",
+            }],
+        }],
+        "argument_steps": [],
+        "candidate_contributions": [],
+        "open_questions": [],
+    }
+    synthesis_result = {
+        "paper_type": "other",
+        "problem": "Terminological ambiguity",
+        "thesis": "A constitutive definition",
+        "contributions": [],
+        "theoretical_framework": [],
+        "method_architecture": [],
+        "key_findings": [],
+        "limitations": [],
+        "uncertainties": [],
+        "relations": [],
+        "theory_logic": [],
+        "argument_map": [],
+    }
+    async def fake_chat(_info, messages, max_tokens=0, **_kwargs):
+        system = messages[0]["content"]
+        if system == v31.CHUNK_SYSTEM:
+            return json.dumps(chunk_result, ensure_ascii=False)
+        if system == v31.SYNTHESIS_SYSTEM:
+            prompt = messages[1]["content"]
+            assert "An agent harness is defined by necessary conditions" in prompt
+            return json.dumps(synthesis_result, ensure_ascii=False)
+        raise AssertionError(f"Unexpected LLM stage: {system[:80]}")
+
+    monkeypatch.setattr(v31, "chat", fake_chat)
+    asyncio.run(v31.run_understanding(draft["id"]))
+
+    saved = v31.get_draft(draft["id"])
+    assert saved["status"] == "draft"
+    assert saved["payload"]["paper_type"] == "other"
+    assert saved["payload"]["coverage"]["completed_chunks"] == 1
+    assert not any("compact_notes" in warning or "NameError" in warning for warning in saved["warnings"])

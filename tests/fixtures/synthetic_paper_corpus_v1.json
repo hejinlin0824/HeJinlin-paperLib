@@ -1,0 +1,21 @@
+{
+  "corpus_id": "paperlib-synthetic-corpus-v1",
+  "synthetic_only": true,
+  "documents": [
+    {"paper_id":"syn-theory","paper_type":"theory","title":"A Synthetic Theory of Widgets",
+     "sections":[{"title":"Definition","blocks":["A widget is a deterministic test object."]},
+                 {"title":"Proposition","blocks":["Conditions A and B jointly imply property P."]}]},
+    {"paper_id":"syn-algorithm","paper_type":"algorithm","title":"A Synthetic Greedy Selector",
+     "sections":[{"title":"Method","blocks":["At each step select the item with the largest remaining gain."]},
+                 {"title":"Complexity","blocks":["The algorithm runs in O(n log n) time."]}]},
+    {"paper_id":"syn-system","paper_type":"system","title":"A Synthetic Edge Runtime",
+     "sections":[{"title":"Architecture","blocks":["The system contains an ingestion service, a scheduler, and a worker pool."]},
+                 {"title":"Data Flow","blocks":["The scheduler dispatches validated jobs to workers."]}]},
+    {"paper_id":"syn-empirical","paper_type":"empirical","title":"A Synthetic Benchmark Study",
+     "sections":[{"title":"Setup","blocks":["We evaluate three configurations on a synthetic benchmark with 100 cases."]},
+                 {"title":"Results","blocks":["Configuration B improves the measured score from 0.80 to 0.86."]}]},
+    {"paper_id":"syn-survey","paper_type":"survey","title":"A Synthetic Survey of Retrieval Methods",
+     "sections":[{"title":"Taxonomy","blocks":["Retrieval methods are grouped into lexical, dense, and hybrid families."]},
+                 {"title":"Discussion","blocks":["Hybrid retrieval combines complementary ranking signals."]}]}
+  ]
+}
